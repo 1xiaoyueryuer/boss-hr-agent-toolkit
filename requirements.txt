@@ -1,0 +1,9 @@
+# BOSS 直聘 HR Skill 包 - Python 依赖
+# 安装: pip install -r requirements.txt
+# 注意：patchright 在此仅作为 CDP 客户端库使用，不需要执行 patchright install chromium
+
+# CDP 客户端库（连接已有浏览器，不下载 Chromium）
+patchright>=1.40
+
+# BOSS 直聘 CLI 工具
+boss-agent-cli
