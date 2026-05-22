@@ -1,6 +1,7 @@
 #BOSS直聘HR智能体技能包
 
-老板-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli),实现BOSS直聘简历筛选全流程自动化。
+boss-agent-cli(https://github.com/can4hou6joeng4/boss-agent-cli)
+实现BOSS直聘简历筛选全流程自动化。
 
 ## 🎯 功能概述
 
