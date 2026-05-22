@@ -20,9 +20,9 @@
 |:-:|------|:----:|------|
 | 0 | **boss-hr-auto** | 🚪 入口 | 编排全流程工作流（唯一入口） |
 | 1 | boss-agent-cli | 📖 参考 | BOSS CLI 命令手册（被其他 Skill 引用） |
-boss-job-detail步骤1|提取岗位JD|
+| 2 | boss-job-detail |步骤1|提取岗位JD|
 | 3 |boss-resume-downloader|步骤2|下载候选人简历|
-第3步|硬门槛过滤 + 加权评分|
+| 4 |resume-screener|步骤3|硬门槛过滤 + 加权评分|
 
 ### 工作流
 
@@ -31,14 +31,14 @@ boss-job-detail步骤1|提取岗位JD|
      │
      ▼
 ┌─────────────────────────────────────────────┐
-│           boss-hr-auto（总控入口）            │
-│                                              │
-│ [步骤1] boss-job-detail → 提取JD │
-│ [步骤2] boss-resume-downloader → 下载简历 │
-│ [Step 3] resume-screener → 评分排名 │
-│ [步骤4] 汇总报告 + 面试建议 │
-│                                              │
-│  参考：boss-agent-cli（CLI 命令手册）              │
+│           boss-hr-auto（总控入口）           │
+│                                             │
+│ [步骤1] boss-job-detail → 提取JD             │
+│ [步骤2] boss-resume-downloader → 下载简历    │
+│ [Step 3] resume-screener → 评分排名          │
+│ [步骤4] 汇总报告 + 面试建议                   │
+│                                             │
+│  参考：boss-agent-cli（CLI 命令手册）         │
 └─────────────────────────────────────────────┘
      │
      ▼
