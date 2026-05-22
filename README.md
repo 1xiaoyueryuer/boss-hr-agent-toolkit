@@ -1,6 +1,6 @@
-# BOSS 直聘 HR 智能体技能包
+#BOSS直聘HR智能体技能包
 
-> 5 个 AI 智能体 Skill，基于 [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli)，实现 BOSS 直聘简历筛选全流程自动化。
+老板-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli),实现BOSS直聘简历筛选全流程自动化。
 
 ## 🎯 功能概述
 
@@ -8,21 +8,21 @@
 你有一个管培生岗位 → AI 自动提取 JD → 自动下载候选人简历 → 自动评分排名 → 输出面试建议
 ```
 
-帮你从 2150 个候选人中，**几分钟内**筛出最匹配的 3-5 人。
+帮你从你指定的岗位中**几分钟内**筛出最匹配的 3-5 人。
 
 ---
 
-## 📦 5 个 Skill 一览
+##5项技能一览
 
-> **🚪 boss-hr-auto 是唯一入口**，其余 4 个 Skill 是它的子步骤。使用时请始终先加载 boss-hr-auto。
+> **🚪 boss-hr-auto 是唯一入口**，其余 4 个技能是它的子步骤。使用时请始终先加载 boss-hr-auto。
 
-| # | Skill | 角色 | 作用 |
+| # |技能|角色|作用|
 |:-:|------|:----:|------|
 | 0 | **boss-hr-auto** | 🚪 入口 | 编排全流程工作流（唯一入口） |
 | 1 | boss-agent-cli | 📖 参考 | BOSS CLI 命令手册（被其他 Skill 引用） |
-| 2 | boss-job-detail | Step 1 | 提取岗位 JD |
-| 3 | boss-resume-downloader | Step 2 | 下载候选人简历 |
-| 4 | resume-screener | Step 3 | 硬门槛过滤 + 加权评分 |
+boss-job-detail步骤1|提取岗位JD|
+| 3 |boss-resume-downloader|步骤2|下载候选人简历|
+第3步|硬门槛过滤 + 加权评分|
 
 ### 工作流
 
@@ -33,10 +33,10 @@
 ┌─────────────────────────────────────────────┐
 │           boss-hr-auto（总控入口）            │
 │                                              │
-│  [Step 1] boss-job-detail       → 提取 JD   │
-│  [Step 2] boss-resume-downloader → 下载简历  │
-│  [Step 3] resume-screener       → 评分排名  │
-│  [Step 4] 汇总报告 + 面试建议                │
+│ [步骤1] boss-job-detail → 提取JD │
+│ [步骤2] boss-resume-downloader → 下载简历 │
+│ [Step 3] resume-screener → 评分排名 │
+│ [步骤4] 汇总报告 + 面试建议 │
 │                                              │
 │  参考：boss-agent-cli（CLI 命令手册）              │
 └─────────────────────────────────────────────┘
@@ -56,7 +56,7 @@
 | 依赖 | 说明 | 安装方式 |
 |------|------|---------|
 | Python 3.10+ | 运行脚本 | [python.org](https://python.org) |
-| [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) | BOSS 直聘 CLI | `uv tool install boss-agent-cli` |
+| [boss-agent-cli](https://github.com/can4hou6joeng4/boss-agent-cli) |BOSS 直聘 CLI| `uv 工具安装 boss-agent-cli` |
 | patchright | CDP 客户端库（Python 包，**不含浏览器，不下载 Chromium**） | `pip install patchright` |
 | Chrome 或 Edge | 任一 Chromium 内核浏览器即可（Windows 自带 Edge） | 已装直接跳过 |
 
