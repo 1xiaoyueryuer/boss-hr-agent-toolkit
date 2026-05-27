@@ -2,20 +2,22 @@
 
 Usage: python boss_jd.py <encryptJobId|jobId|职位名>
 """
-import json, sys, subprocess, time
+import json, sys, subprocess, time, os
 from pathlib import Path
 from patchright.sync_api import sync_playwright
 
 CDP_URL = "http://localhost:9222"
 OUT_DIR = Path.home() / "WorkBuddy" / "boss-resumes" / "jd"
 
+_BOSS_ENV = {**os.environ, "PYTHONHOME": "", "PYTHONIOENCODING": "utf-8"}
+
 
 def resolve_encrypt_id(query):
     result = subprocess.run(
         ["boss", "--role", "recruiter", "--cdp-url", CDP_URL, "hr", "jobs", "list"],
-        capture_output=True, timeout=15
+        capture_output=True, timeout=15, env=_BOSS_ENV
     )
-    data = json.loads(result.stdout.decode("gbk"))
+    data = json.loads(result.stdout.decode("utf-8"))
     exact = partial = None
     for job in data.get("data", []):
         name = job.get("jobName", "")

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f5f7fa; color: #1a1a2e; padding: 40px 20px; }
+  .container { max-width: 960px; margin: 0 auto; }
+  .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; border-radius: 16px; padding: 40px 48px; margin-bottom: 24px; }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .header .subtitle { font-size: 14px; opacity: 0.7; }
+  .header .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 24px; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.1); }
+  .header .meta-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.5; margin-bottom: 4px; }
+  .header .meta-value { font-size: 15px; font-weight: 500; }
+  .section { background: white; border-radius: 12px; padding: 28px 32px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .section-title { font-size: 17px; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+  .section-title .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; background: #eef2ff; color: #4f46e5; }
+  .tag { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 12px; font-weight: 500; }
+  .tag-green { background: #ecfdf5; color: #059669; }
+  .tag-yellow { background: #fffbeb; color: #d97706; }
+  .tag-red { background: #fef2f2; color: #dc2626; }
+  .tag-blue { background: #eef2ff; color: #4f46e5; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .summary-card { padding: 20px; border-radius: 10px; text-align: center; }
+  .summary-card.green { background: #ecfdf5; }
+  .summary-card.yellow { background: #fffbeb; }
+  .summary-card.red { background: #fef2f2; }
+  .summary-card .number { font-size: 32px; font-weight: 700; }
+  .summary-card .label { font-size: 13px; color: #6b7280; margin-top: 4px; }
+  .summary-card.green .number { color: #059669; }
+  .summary-card.yellow .number { color: #d97706; }
+  .summary-card.red .number { color: #dc2626; }
+  .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rank-table th { text-align: left; padding: 10px 12px; font-weight: 600; color: #6b7280; border-bottom: 2px solid #e5e7eb; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .rank-table td { padding: 12px; border-bottom: 1px solid #f3f4f6; }
+  .rank-table tr:last-child td { border-bottom: none; }
+  .rank-table .name { font-weight: 600; }
+  .rank-table .score { font-weight: 700; font-size: 15px; }
+  .rank-medal { font-size: 18px; }
+  .candidate-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .candidate-card:last-child { margin-bottom: 0; }
+  .candidate-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .candidate-header .name { font-size: 16px; font-weight: 600; }
+  .candidate-header .total-score { font-size: 24px; font-weight: 700; }
+  .candidate-header .total-score.green { color: #059669; }
+  .candidate-header .total-score.yellow { color: #d97706; }
+  .candidate-header .total-score.red { color: #dc2626; }
+  .dim-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .dim-item { background: #f9fafb; border-radius: 8px; padding: 10px 12px; }
+  .dim-item .dim-label { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+  .dim-item .dim-bar-wrap { height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden; margin-bottom: 4px; }
+  .dim-item .dim-bar { height: 100%; border-radius: 2px; }
+  .dim-item .dim-value { font-size: 13px; font-weight: 600; }
+  .dim-item .dim-note { font-size: 10px; color: #9ca3af; margin-top: 2px; }
+  .action-item { display: flex; align-items: flex-start; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f3f4f6; }
+  .action-item:last-child { border-bottom: none; }
+  .action-rank { font-size: 20px; min-width: 32px; text-align: center; }
+  .action-detail { flex: 1; }
+  .action-detail .name { font-weight: 600; font-size: 15px; }
+  .action-detail .reason { font-size: 13px; color: #6b7280; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>{{TITLE}}</h1>
+    <div class="subtitle">{{SUBTITLE}}</div>
+    <div class="meta-grid">{{META_ITEMS}}</div>
+  </div>
+  <div class="section">
+    <div class="section-title">{{SUMMARY_TITLE}} <span class="badge">{{SUMMARY_BADGE}}</span></div>
+    <div class="summary-grid">{{SUMMARY_CARDS}}</div>
+  </div>
+  <div class="section">
+    <div class="section-title">🏆 总分排名 <span class="badge">各维度加权分明细</span></div>
+    <table class="rank-table">
+      <thead><tr><th>排名</th><th>候选人</th><th>总分</th><th>学历30%</th><th>实习20%</th><th>竞赛10%</th><th>技能15%</th><th>品格10%</th><th>专业15%</th><th>建议</th></tr></thead>
+      <tbody>{{TABLE_ROWS}}</tbody>
+    </table>
+  </div>
+  <div class="section">
+    <div class="section-title">📄 候选人详细评分 <span class="badge">每人含6维度评分依据</span></div>
+    {{DETAIL_CARDS}}
+  </div>
+  <div class="section">
+    <div class="section-title">🎯 行动建议</div>
+    {{ACTION_ITEMS}}
+  </div>
+  <div style="text-align:center;font-size:12px;color:#9ca3af;margin-top:32px;padding-bottom:16px;">{{FOOTER}}</div>
+</div>
+</body>
+</html>

@@ -4,8 +4,8 @@ description: |
   批量下载 BOSS 直聘候选人简历（增量同步 + 防封去重）。
 
   **本 Skill 是 boss-hr-auto 编排流程的子步骤（Step 2），通常在 boss-hr-auto 工作流中调用，不应作为入口 Skill 直接加载。**
+type: workflow
 ---
-
 # Boss Resume Downloader
 
 ## Purpose
@@ -22,7 +22,7 @@ Use this skill for two related goals:
 Prefer these defaults unless the user explicitly requests otherwise. Paths shown with `~` are POSIX (macOS/Linux); the Windows equivalent uses `%USERPROFILE%`.
 
 | Item | Value (POSIX) | Value (Windows) |
-|---|---|---|
+|------|---------------|-----------------|
 | Platform | `zhipin` | `zhipin` |
 | Role | `recruiter` | `recruiter` |
 | CDP URL | `http://localhost:9222` | `http://localhost:9222` |
@@ -289,10 +289,74 @@ Use the Python interpreter that has `boss_agent_cli` importable, otherwise the `
 
 If `boss` is not on PATH, override with `--boss-bin <path>` or set `BOSS_BIN=<path>` in the environment.
 
+### ⚠️ Known limitation: `applications` returns 0 for recommended/chat-based candidates
+
+`boss hr applications` **only returns candidates who formally applied to the job.** It returns 0 for:
+- Candidates the recruiter contacted via **推荐牛人** (recommended by BOSS algorithm)
+- Candidates from **主动搜索打招呼**
+- Any candidate where `friendSource != 0` in the friend list
+
+**Detection:** Run `boss hr chat` — if it also returns 0 or only 1-3 entries, your candidates are likely from recommendations, not formal applications.
+
+**Fix — CDP friend list → CLI resume download (proven approach):**
+
+Instead of relying on `sync_boss_resumes.py` (which calls `applications`), use this two-phase approach:
+
+**Phase 1: CDP browser captures the full friend list**
+```python
+from patchright.sync_api import sync_playwright
+import json
+
+captured = {}
+def on_resp(resp):
+    if 'getBossFriendListV2' in resp.url:
+        try: captured['fl'] = resp.json()
+        except: pass
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp('http://localhost:9222')
+    pg = browser.contexts[0].pages[0]  # NEVER new_page()
+    pg.on('response', on_resp)
+    pg.goto('https://www.zhipin.com/web/chat/index', wait_until='networkidle', timeout=30000)
+    time.sleep(5)
+
+    friends = captured['fl']['zpData']['friendList']
+    # Each friend has: name, uid, encryptUid, securityId, encryptJobId, jobName
+    # uid = friendId, encryptUid = encryptGeekId (for hr resume)
+```
+See `references/resume-download-via-friend-list.md` for the complete working script.
+
+**Phase 2: CLI downloads each resume individually**
+```python
+import subprocess
+for f in friends:
+    result = subprocess.run([
+        'boss.exe', '--role', 'recruiter', '--platform', 'zhipin',
+        '--cdp-url', 'http://localhost:9222',
+        'hr', 'resume', f['encryptUid'],
+        '--job-id', f['encryptJobId'],
+        '--security-id', f['securityId']
+    ], capture_output=True, timeout=45, env=BOSS_ENV)
+    # Save raw_response.json + resume.json + resume.md
+    # Apply 3-6s random delay between downloads
+```
+
+**Parameter mapping (friend list → CLI):**
+| friendList field | CLI parameter | Purpose |
+|:----------------|:--------------|:--------|
+| `encryptUid` | `encryptGeekId` | `boss hr resume` first arg |
+| `securityId` | `--security-id` | Resume download auth token |
+| `encryptJobId` | `--job-id` | Required job context |
+| `uid` | — | Unique ID for file naming |
+
+> ⚠️ This approach requires the CLI to be **properly logged in** (not a false positive). Run the login verification from boss-agent-cli first.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
-|---|---|---|
+|---------|--------------|-----|
 | `unrecognized arguments: --verbose` | Global option placed after the subcommand | Put `--verbose` before `sync-all` or `sync-job` |
 | `[WinError 2] 系统找不到指定的文件` / `FileNotFoundError: boss` | Subprocess cannot find `boss` on PATH | Pass `--boss-bin <path>` or set `BOSS_BIN`; on Windows use `%USERPROFILE%\bin\boss.cmd` |
 | Not logged in despite browser login | Wrong auth data dir | Use `--data-dir ~/.boss-agent` (Windows: `%USERPROFILE%\.boss-agent`) |

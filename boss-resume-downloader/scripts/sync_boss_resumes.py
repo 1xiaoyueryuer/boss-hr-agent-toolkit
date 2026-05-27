@@ -12,6 +12,11 @@ Usage:
 Defaults:
     --root  %USERPROFILE%/WorkBuddy/boss-resumes
     --cdp   http://localhost:9222
+
+Fixed bugs:
+    [Bug #1] GBK encoding crash: removed text=True, use PYTHONIOENCODING=utf-8 + raw bytes
+    [Bug #2] Pagination dead loop: removed --page (API doesn't actually paginate)
+    [Bug #3] Wrong data structure in _write_resume_md: dropped --raw, use clean non-raw format
 """
 
 from __future__ import annotations
@@ -34,8 +39,6 @@ from typing import Any
 
 DEFAULT_ROOT = Path.home() / "WorkBuddy" / "boss-resumes"
 CDP_URL = "http://localhost:9222"
-BOSS_BIN = "boss"
-CDP_URL = CDP_URL
 PLATFORM = "zhipin"
 ROLE = "recruiter"
 
@@ -65,17 +68,29 @@ def safe_filename(s: str, max_len: int = 50) -> str:
 
 
 def boss_cmd(args: list[str], verbose: bool = False) -> tuple[dict[str, Any], str]:
-    """Run a boss CLI command and return (parsed_json, raw_output)."""
+    """
+    Run a boss CLI command and return (parsed_json, raw_output).
+
+    Fixes Bug #1 (GBK encoding crash on Chinese Windows):
+      - Inject PYTHONIOENCODING=utf-8 so the CLI subprocess outputs UTF-8
+      - Use raw bytes (not text=True) to avoid Python's internal GBK reader thread
+      - Decode stdout with utf-8 explicitly
+    """
     cmd = [
-        BOSS_BIN,
+        "boss",
         "--role", ROLE,
         "--platform", PLATFORM,
         "--cdp-url", CDP_URL,
     ] + args
     if verbose:
         eprint("$", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    raw = result.stdout.strip()
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    result = subprocess.run(cmd, capture_output=True, timeout=30, env=env)
+    try:
+        raw = result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return {}, ""
     if not raw:
         return {}, ""
     try:
@@ -209,22 +224,15 @@ def _refresh_jobs(root: Path, verbose: bool) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _list_applications(encrypt_job_id: str, verbose: bool) -> list[dict[str, Any]]:
-    """Fetch all candidates for a job (paginated)."""
-    all_candidates: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        args = ["hr", "applications", "--job-id", encrypt_job_id, "--page", str(page)]
-        resp, raw = boss_cmd(args, verbose=verbose)
-        result_list = ((resp.get("data") or {}).get("result") or [])
-        if not result_list:
-            break
-        all_candidates.extend(result_list)
-        page += 1
-        if page > 50:
-            if verbose:
-                eprint("[warn] applications pagination stopped at page 50 (hard cap)")
-            break
-    return all_candidates
+    """
+    Fetch all candidates for a job.
+
+    Fixes Bug #2: The CLI --page parameter doesn't actually paginate the BOSS API;
+    every page returns the full list. So we call once without --page and that's it.
+    """
+    args = ["hr", "applications", "--job-id", encrypt_job_id]
+    resp, raw = boss_cmd(args, verbose=verbose)
+    return (resp.get("data") or {}).get("result") or []
 
 
 def _resolve_candidate(
@@ -271,7 +279,9 @@ def _download_resume(
         return "pending_security_id"
 
     if not dry_run:
-        args = ["hr", "resume", geek_id, "--job-id", job_id, "--security-id", sec_id, "--raw"]
+        # Fixes Bug #3: dropped --raw flag. Non-raw format returns clean structured data
+        # with predictable field names (basic, education, work_experience, etc.)
+        args = ["hr", "resume", geek_id, "--job-id", job_id, "--security-id", sec_id]
         resp, raw = boss_cmd(args, verbose=verbose)
         if not raw:
             return "failed"
@@ -286,95 +296,125 @@ def _download_resume(
 
 
 def _write_resume_md(raw_response: dict[str, Any], md_path: Path) -> None:
-    """Write a human-readable Markdown resume from the raw API response."""
-    data = raw_response.get("data", {}) or {}
-    zp = data.get("zpData", {}) or {}
-    detail = zp.get("geekDetailInfo", {}) or {}
-    base = detail.get("geekBaseInfo", {}) or {}
+    """
+    Write a human-readable Markdown resume from the CLI response.
 
-    gender_map = {0: "女", 1: "男"}
+    Fixes Bug #3: maps the actual non-raw CLI response structure.
+    Non-raw structure:
+      data.basic       -> {name, gender:"男"/"女", age, degree, work_years, active_status}
+      data.education   -> [{school, major, degree, start, end}]
+      data.work_experience -> [{company, position, department, start, end, duration, responsibility, keywords}]
+      data.project_experience -> [...]
+      data.certifications    -> [str, str, ...]
+      data.expectation       -> {position, salary, location, ...}
+    """
+    data = raw_response.get("data", {}) or {}
+    basic = data.get("basic", {}) or {}
 
     lines = [
         "# 候选人简历\n",
-        f"**姓名：** {base.get('name', '')}",
-        f"**性别：** {gender_map.get(base.get('gender'), '未知')}",
-        f"**年龄：** {base.get('ageDesc', '')}",
-        f"**学历：** {base.get('degreeCategory', '')}",
-        f"**工作年限：** {base.get('workYearDesc', '')}",
-        f"**状态：** {base.get('applyStatusContent', '')}",
+        f"**姓名：** {basic.get('name', '')}",
+        f"**性别：** {basic.get('gender', '')}",
+        f"**年龄：** {basic.get('age', '')}",
+        f"**学历：** {basic.get('degree', '')}",
+        f"**工作年限：** {basic.get('work_years', '')}",
+        f"**状态：** {basic.get('active_status', '')}",
         "",
     ]
 
-    desc = base.get("userDescription", "")
-    if desc:
-        lines.append(f"**自我介绍：** {desc}")
-        lines.append("")
-
     # Education
-    edu_list = detail.get("geekEduExpList") or []
+    edu_list = data.get("education") or []
     if edu_list:
         lines.append("## 教育经历\n")
         for edu in edu_list:
             school = edu.get("school", "")
             major = edu.get("major", "")
-            deg = edu.get("degreeName", "")
-            sd = edu.get("startDateDesc", "")
-            ed = edu.get("endDateDesc", "")
-            lines.append(f"- **{school}** | {major} | {deg} | {sd}-{ed}")
+            deg = edu.get("degree", "")
+            sd = edu.get("start", "")
+            ed = edu.get("end", "")
+            parts = " | ".join(filter(None, [school, major, deg]))
+            date_range = f" ({sd}-{ed})" if sd or ed else ""
+            lines.append(f"- **{school}**{date_range}")
+            lines.append(f"  - 专业：{major}" if major else "")
+            lines.append(f"  - 学历：{deg}" if deg else "")
         lines.append("")
 
     # Work experience
-    work_list = detail.get("geekWorkExpList") or []
+    work_list = data.get("work_experience") or []
     if work_list:
         lines.append("## 工作经历\n")
         for we in work_list:
-            pos = we.get("positionName", "")
+            pos = we.get("position", "")
             comp = we.get("company", "")
-            sm = we.get("startYearMonStr", "")
-            em = we.get("endYearMonStr", "")
+            sm = we.get("start", "")
+            em = we.get("end", "")
             dep = we.get("department", "")
-            wd = we.get("workYearDesc", "")
-            lines.append(f"### {pos} @ {comp} ({sm} - {em})")
-            if dep or wd:
-                parts = [f"**部门：** {dep}"] if dep else []
-                parts.append(f"**工作时长：** {wd}") if wd else None
-                lines.append(" | ".join(parts) if parts else "")
+            dur = we.get("duration", "")
+            header = f"### {pos} @ {comp} ({sm} - {em})" if sm else f"### {pos} @ {comp}"
+            lines.append(header)
+            detail_parts = []
+            if dep:
+                detail_parts.append(f"部门：{dep}")
+            if dur:
+                detail_parts.append(f"时长：{dur}")
+            if detail_parts:
+                lines.append(" | ".join(detail_parts))
             lines.append("")
             resp_text = we.get("responsibility", "")
             if resp_text:
                 for r in resp_text.split("\\n"):
                     r = r.strip()
                     if r:
-                        lines.append(f"-   {r}")
+                        # Some items start with "1." style numbering
+                        lines.append(f"- {r}" if not r.startswith("- ") else r)
             lines.append("")
 
-    # Skills
-    skill = detail.get("professionalSkill", "") or ""
-    if skill:
-        lines.append("## 专业技能\n")
-        for s in skill.split(","):
-            s = s.strip()
-            if s:
-                lines.append(f"- {s}")
-        lines.append("")
+    # Project experience
+    proj_list = data.get("project_experience") or []
+    if proj_list:
+        lines.append("## 项目经历\n")
+        for proj in proj_list:
+            pname = proj.get("project_name", proj.get("name", ""))
+            prole = proj.get("role", "")
+            pdesc = proj.get("description", "")
+            pstart = proj.get("start", "")
+            pend = proj.get("end", "")
+            header = f"### {pname}"
+            if prole:
+                header += f" ({prole})"
+            lines.append(header)
+            if pstart or pend:
+                lines.append(f"**时间：** {pstart}-{pend}" if pstart else f"**时间：** {pend}")
+            if pdesc:
+                for r in pdesc.split("\\n"):
+                    r = r.strip()
+                    if r:
+                        lines.append(f"- {r}")
+            lines.append("")
 
+    # Skills (may not be present in non-raw, skip gracefully)
     # Certifications
-    certs = detail.get("geekCertificationList") or []
+    certs = data.get("certifications") or []
     if certs:
         lines.append("## 证书\n")
         for c in certs:
-            cn = c.get("certName", "")
+            if isinstance(c, str):
+                cn = c
+            elif isinstance(c, dict):
+                cn = c.get("certName", c.get("name", ""))
+            else:
+                cn = str(c)
             if cn:
                 lines.append(f"- {cn}")
         lines.append("")
 
     # Expected position
-    expect = detail.get("showExpectPosition") or {}
+    expect = data.get("expectation") or {}
     if expect:
         lines.append("## 求职意向\n")
-        lines.append(f"- **期望职位：** {expect.get('positionName', '')}")
-        lines.append(f"- **期望地点：** {expect.get('locationName', '')}")
-        lines.append(f"- **期望薪资：** {expect.get('salaryDesc', '')}")
+        lines.append(f"- **期望职位：** {expect.get('position', '')}")
+        lines.append(f"- **期望地点：** {expect.get('location', '')}")
+        lines.append(f"- **期望薪资：** {expect.get('salary', '')}")
 
     text = "\n".join(lines)
     md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,7 +448,7 @@ def _sync_job(job_entry: dict[str, Any], root: Path, force: bool,
             cm[str(c.get("friendId", c.get("id", "")))] = c
         candidates_map = cm
 
-    # Fetch applications
+    # Fetch applications (single call, no pagination loop - Fix #2)
     apps = _list_applications(encrypt_job_id, verbose)
     if verbose:
         eprint(f"  {len(apps)} applicants found")
@@ -634,8 +674,6 @@ def main() -> None:
                         help=f"Resume root directory. Default: {DEFAULT_ROOT}")
     parser.add_argument("--cdp-url", default=CDP_URL,
                         help=f"CDP URL. Default: {CDP_URL}")
-    parser.add_argument("--boss-bin", default=BOSS_BIN,
-                        help=f"boss executable path/name. Default: {BOSS_BIN}")
     parser.add_argument("--verbose", action="store_true",
                         help="Print executed commands to stderr.")
 
@@ -665,9 +703,6 @@ def main() -> None:
                        help="Max candidates to download per job (0=unlimited).")
 
     args = parser.parse_args()
-
-    # Override: pass through config (global not used)
-    pass
 
     if args.command == "refresh-jobs":
         cmd_refresh_jobs(args)
