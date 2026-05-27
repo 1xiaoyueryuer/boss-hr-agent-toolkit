@@ -15,7 +15,6 @@ description: |
   **子 Skill 说明**：本包的 boss-job-detail、boss-resume-downloader、resume-screener、boss-agent-cli 均为此编排流程的子步骤，不应作为入口直接加载。请始终先加载本 Skill 获取完整工作流，再按 Step 顺序调用子 Skill。
 type: workflow
 ---
-
 # BOSS 直聘 HR 简历筛选全流程
 
 > **🚪 入口声明**：本 Skill 是 boss-hr-agent-toolkit 项目唯一入口。下文的 4 个子 Skill（boss-job-detail、boss-resume-downloader、resume-screener、boss-agent-cli）均应按本 Skill 的编排顺序调用，不得作为独立入口加载。
@@ -42,11 +41,11 @@ type: workflow
 
 ---
 
-## 🔧 辅助脚本
+## 🔧 辅助脚本 & 参考
 
-| 脚本 | 位置 | 用途 |
+| 文件 | 位置 | 用途 |
 |:----|:----|:----|
-| `gen_handover_doc.py` | `scripts/gen_handover_doc.py` | 生成系统对接文档（docx），交接工作时用 |
+| `browser-fallback-when-cli-down.md` | `references/browser-fallback-when-cli-down.md` | CLI 假阳性时用 CDP 浏览器直接获取 JD+候选人的代码示例 |
 
 ---
 
@@ -89,11 +88,78 @@ pip install patchright
 
 > 注意：浏览器是系统自带 Edge/Chrome，不需要额外下载。
 
+### 0.5 环境变量配置（安装后必做）
+
+安装完 boss-agent-cli 后，需要正确配置环境变量才能正常工作。
+
+#### 一键启动（推荐）
+
+```bash
+# 在项目目录下执行，每次打开新终端先跑这个
+source scripts/setup_env.sh
+```
+
+该脚本会自动设置 `PYTHONHOME=""` 和 `PATH`，并验证 boss CLI 是否可用。
+
+#### 永久生效（一次配置，以后不用再跑）
+
+把以下两行加到 `~/.bashrc` 末尾，以后每次打开终端自动生效：
+
+```bash
+echo 'export PYTHONHOME=""
+export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+> ⚠️ 注意：`PYTHONHOME` 可能影响其他 Python 应用。如果遇到 Python 相关报错，注释掉 `~/.bashrc` 中的 `PYTHONHOME` 行，改为每次手动执行 `source scripts/setup_env.sh`。
+
+#### 环境变量说明
+
+| 变量 | 说明 | 默认值 | 何时需要修改 |
+|------|------|--------|------------|
+| `PYTHONHOME` | **必须清空**。Windows git-bash 下此变量若指向已删除的 Python，CLI 报 `Fatal Python error` | `""` | 每次运行 boss 命令前 |
+| `PATH` | boss.exe 在 `~/.local/bin/`，但 git-bash 默认不在 PATH 中 | 追加 `$HOME/.local/bin` | 提示"command not found"时 |
+| `CDP_URL` | 浏览器 CDP 调试地址 | `http://localhost:9222` | 9222 端口被占用时 |
+| `BOSS_BIN` | boss CLI 完整路径 | `boss`（自动查找 PATH） | boss 不在 PATH 且无法添加时 |
+
 ---
 
 **每次跑流程时，智能体自动完成以下步骤：**
 
-### 启动 CDP 浏览器
+### 0. 环境修复 + 验证 CLI 登录（每次执行前必做）
+
+⚠️ **`boss status` 是假阳性检测器，不可信。必须用 `boss me` + `hr jobs list` 双重验证。**
+
+```bash
+# 步骤 A：初步检查
+export PYTHONHOME=""
+export PATH="$PATH:$HOME/.local/bin"
+boss.exe status
+
+# 步骤 B：验证是否真登录——必须有真实姓名
+boss.exe --role recruiter me
+
+# 步骤 C：验证是否能访问岗位数据（最重要）
+boss.exe --role recruiter --platform zhipin --cdp-url http://localhost:9222 hr jobs list
+```
+
+**判定标准：**
+
+| `hr jobs list` 结果 | `boss me` 结果 | 含义 | 操作 |
+|:-------------------|:--------------|:----|:----|
+| `data: [{...}]`（有数据） | `name: "真实姓名"` | ✅ 真登录 | 继续执行 |
+| `data: {}` 或 `data: []`（空） | `name: ""`（空） | ❌ 假阳性 | **立即修复 → `boss login --cdp --timeout 30`** |
+| 返回错误 / 命令失败 | — | ❌ 未登录 | 打开登录页让用户扫码，然后 `boss login --cdp` |
+
+**假阳性修复命令（唯一正确方式）：**
+```bash
+boss login --cdp --timeout 30
+```
+修复后必须重新执行步骤 B 和 C 确认登录成功，才能继续。
+
+> **绝对禁止的行为：** CLI 登录验证失败后，不要尝试用浏览器 API 拦截、CDP 直接操作、或任何其他替代方法来绕过 CLI。必须先把 CLI 修好。
+
+### 1. 启动 CDP 浏览器
 
 **🤖 智能体自动做：** 用 `terminal(background=true)` 启动 Edge/Chrome，带上远程调试端口：
 
@@ -167,6 +233,41 @@ PYTHONHOME="" python scripts/boss_jd.py <encryptJobId 或 jobId 或 岗位名>
 
 **输出：** 结构化 JD 数据（岗位名、学历、专业、经验、职责、技能栈），用于 Step 3 评分。
 
+#### 🔧 CLI 不可用时的回退：CDP 浏览器直接提取
+
+如果 `boss hr jobs list` 返回空数据（CLI 假阳性），`boss_jd.py` 脚本无法匹配岗位。此时**直接通过 CDP 浏览器导航到岗位编辑页**：
+
+```python
+from patchright.sync_api import sync_playwright
+import json, time
+
+# 用已知的 encryptJobId（可从聊天页候选人关联的岗位名获取）
+encrypt_job_id = "4c297ca36277e0400nB-29m9EFpZ"  # 示例
+target = f"https://www.zhipin.com/web/chat/job/edit?encryptId={encrypt_job_id}&jobCreateSource=0&enterSource=6"
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://localhost:9222")
+    pg = browser.contexts[0].pages[0]  # 复用已有页面，不 new_page()
+    pg.goto(target, wait_until="networkidle", timeout=30000)
+    time.sleep(3)
+
+    iframe = pg.query_selector("iframe")
+    frame = iframe.content_frame()
+    body_text = frame.evaluate("document.body.innerText")
+
+    # 提取表单完整值（含职位描述）
+    form_vals = frame.evaluate("""() => {
+        const r = [];
+        document.querySelectorAll('input:not([type=hidden]), textarea, [contenteditable]').forEach(el => {
+            const v = el.value || el.innerText || '';
+            if (v && v.length > 2 && v !== '保存') r.push(v);
+        });
+        return r;
+    }""")
+```
+
+**如果不知道 encryptJobId：** 从聊天页左侧列表中找到该岗位的候选人，点击后页面 URL 或 intercepted API 响应中会包含 `encryptJobId`。
+
 ---
 
 ## Step 2: 下载候选人简历
@@ -187,6 +288,59 @@ python scripts/sync_boss_resumes.py sync-job --job-id <jobId> --max 10
 - 脚本自带随机延迟防封
 
 **输出目录：** `%USERPROFILE%/WorkBuddy/boss-resumes/jobs/<岗位名>/resumes/`
+
+#### 🔧 CLI 不可用时的回退：浏览器 API 响应拦截
+
+当 `boss hr jobs list` 或 `boss hr applications` 返回空数据时，**用 CDP 浏览器的网络响应拦截**获取候选人和简历数据：
+
+1. **获取候选列表 + securityId：** 拦截 `getBossFriendListV2` API 响应
+2. **获取聊天消息：** 读取页面 text（所见即所得）
+3. **注意：** 此方法只能拿到基本信息和聊天自述，无法获取完整简历 JSON
+
+```python
+from patchright.sync_api import sync_playwright
+import json, time
+
+captured = {}
+def on_response(resp):
+    url = resp.url
+    try:
+        if 'getBossFriendListV2' in url:
+            captured['friend_list'] = resp.json()
+    except:
+        pass
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://localhost:9222")
+    pg = browser.contexts[0].pages[0]  # 复用 pages[0]，不 new_page()
+
+    pg.on("response", on_response)
+    pg.goto("https://www.zhipin.com/web/chat/index", wait_until="networkidle", timeout=30000)
+    time.sleep(5)
+
+    # 从响应中提取 candidate 数据
+    fl_data = captured.get("friend_list", {}).get("zpData", {})
+    friends = fl_data.get("friendList", [])  # 列表项含: name, securityId, encryptUid, uid, jobName, encryptJobId
+    # 提取候选人信息
+    for f in friends:
+        name = f.get("name")
+        sec_id = f.get("securityId", "")       # 简历下载所需
+        encrypt_uid = f.get("encryptUid", "")  # 同 encryptGeekId
+        uid = f.get("uid", 0)                  # 同 friendId
+
+    # 从页面 text 提取聊天消息（每个候选人最后一条消息）
+    page_text = pg.evaluate("document.body.innerText")
+```
+
+候选人的加密参数对应关系：
+| 参数 | friendList 中的字段 | 用途 |
+|:----|:------------------|:-----|
+| encryptGeekId | `encryptUid` | `boss hr resume` 的参数 |
+| securityId | `securityId` | `boss hr resume` 的参数 |
+| encryptJobId | `encryptJobId` | `boss hr resume` 的参数 |
+| friendId | `uid` | 聊天 API 参数 |
+
+> ⚠️ 即便拿到这些参数，如果 CLI session 已过期，`boss hr resume` 也会返回空简历数据。此时评分只能基于聊天消息中的自述信息。
 
 ---
 
@@ -253,6 +407,16 @@ python scripts/sync_boss_resumes.py sync-job --job-id <jobId> --max 10
 - 必须两段式登录：CDP 扫码 → `boss login` 拾取 session
 - 验证：`boss me` 返回真实用户信息
 - `boss status` 不可靠（可能假阳性）
+
+### CLI 假阳性检测（重要）
+`boss status` 返回 `logged_in: true` 但实际 token 可能已过期。**确认方法：**
+```bash
+# ✅ 真阳性 — 能返回在线岗位数据
+boss --role recruiter --platform zhipin --cdp-url http://localhost:9222 hr jobs list
+
+# ❌ 假阳性 — 返回 data: {}（空对象），token 已过期
+```
+关键判断：如果 `hr jobs list` 返回 `"data": {}`（空 JSON 对象）而非岗位数组，说明 CLI session 已过期。**不要继续依赖 CLI**，立即切换到 CDP 浏览器直接操作。
 
 ### 编码
 - BOSS CLI stdout 为 GBK 编码
