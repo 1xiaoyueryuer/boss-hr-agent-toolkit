@@ -183,6 +183,73 @@ boss login --cdp --timeout 30
 - 有 Cookie → 注入浏览器
 - 无 Cookie → 打开登录页，提示用户扫码
 
+### 🍪 Cookie 持久化：浏览器关闭后再开无需重新登录
+
+**核心原理：** 用 `--user-data-dir` 固定一个浏览器 profile 目录，所有 cookie/localStorage/session 会自动保存到该目录中。
+
+```bash
+# ✅ 正确方式：始终使用同一个 user-data-dir 路径
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
+  --remote-debugging-port=9222 ^
+  --user-data-dir="%USERPROFILE%\.workbuddy\chrome-profiles\boss-cdp"
+
+# 下次重新启动时，用完全相同的路径，cookie 仍在
+# 浏览器会恢复所有登录态，无需再次扫码
+```
+
+**不要这样做（会导致每次都重新登录）：**
+- ❌ 每次启动用不同的 `--user-data-dir` 路径
+- ❌ 不用 `--user-data-dir`（Edge 默认用临时 profile，关闭后 cookie 丢失）
+- ❌ 手动关闭浏览器窗口后重新打开新的（CDP 端口必须还在，否则需要新连接）
+
+**验证 cookie 是否持久化成功：**
+```bash
+# 1. 启动浏览器（即使已登录过，也启动相同路径）
+# 2. 导航到 BOSS 直聘聊天页
+curl -s http://localhost:9222/json | python -c "import sys,json; data=json.load(sys.stdin); print(data[0]['webSocketDebuggerUrl'] if data else 'no pages')"
+
+# 3. 用 CDP 检查 cookie
+# 如果能看到 zp_token、zp_at 等 cookie → ✅ 持久化成功
+```
+
+#### 浏览器崩溃 / 异常关闭后的处理
+
+如果浏览器异常关闭（进程被 kill、电脑重启），只要 `--user-data-dir` 路径没变，下次启动后 cookie 还在。偶尔 BOSS 会要求重新登录（cookie 过期），此时用 CDP 导航到 `https://www.zhipin.com` 检查，若已退出则重新扫码。
+
+#### 双 session 同步策略
+
+BOSS 有两个独立的登录 session：
+
+| Session | 存储位置 | 如何持久化 | 检查方法 |
+|:--------|:---------|:-----------|:---------|
+| 🖥️ **CDP 浏览器** | `--user-data-dir` 目录下的 Cookies SQLite DB | 固定路径，自动保存 | 导航到聊天页看是否登录 |
+| 💻 **CLI (`boss.exe`)** | `~/.boss-agent/credentials.json` 或系统 keychain | `boss login` 后自动保存 | `boss me` 返回真实姓名 |
+
+**这两者相互独立** — CDP 浏览器登录了不表示 CLI 也登录了。每次执行流程前必须**分别验证两者**：
+```bash
+# 验证 CDP 浏览器：导航到聊天页
+curl -s http://localhost:9222/json/version  # 浏览器活着
+# 然后 CDP 脚本判断页面是否有登录态
+
+# 验证 CLI：
+boss.exe --role recruiter me
+boss.exe --role recruiter --platform zhipin hr jobs list  # 关键是这个
+```
+
+#### 如果 CLI token 过期但浏览器未过期
+
+```bash
+# 方案：用 CDP 浏览器登录的 session 重新拾取 CLI token
+boss login --cdp --timeout 30
+# boss CLI 会通过 CDP 从浏览器中读取 cookie 并生成新的 CLI token
+```
+
+#### 如果浏览器过期但 CLI 未过期
+
+CLI 无法反向注入 cookie 到浏览器。此时只能引导用户重新扫码登录浏览器（导航到 `https://www.zhipin.com` 后提示扫码）。
+
+---
+
 ### 0.7 环境修复
 
 ```bash
@@ -190,6 +257,125 @@ boss login --cdp --timeout 30
 export PYTHONHOME=""
 # 或在 ~/.profile 添加以上命令永久生效
 ```
+
+---
+
+---
+
+## 🔐 登录故障诊断与排除（假登录识别 & 解决方案）
+
+### 假登录的 3 种场景
+
+#### 场景 1：`boss status` 假阳性（最常见）
+
+`boss status` 返回 `logged_in: true` 但实际 token 已过期。
+
+**诊断方法：**
+```bash
+# ❌ 不可信的检查
+boss.exe status                          # 即使过期也显示 logged_in: true
+
+# ✅ 可信检查 1：是否能获取真实用户信息
+boss.exe --role recruiter me             # 假阳性时 name 为空字符串
+
+# ✅ 可信检查 2：是否能访问岗位数据（最终裁定）
+boss.exe --role recruiter --platform zhipin hr jobs list   # 关键
+```
+
+**判定速查表：**
+
+| `hr jobs list` | `boss me` | 结论 | 操作 |
+|:---------------|:----------|:-----|:-----|
+| `data: [{...}]`（数组有元素） | `name: "潘煜"` | ✅ 真登录 | 继续执行 |
+| `data: {}`（空 JSON 对象） | `name: ""` | ❌ 假阳性 | `boss login --cdp --timeout 30` |
+| `data: []`（空数组） | `name: ""` | ❌ 假阳性 | `boss login --cdp --timeout 30` |
+| 网络错误 / 超时 | — | ❌ 未登录 | 启动 CDP 浏览器导航到登录页 → 用户扫码 → `boss login --cdp` |
+
+**注意区分 `data: {}` 和 `data: []`：**
+- `data: {}`（空对象） = ❌ CLI token 过期，session 失效
+- `data: []`（空数组） = ❌ CLI token 过期 或 该账号没有任何岗位
+- `data: [{...}]`（有内容的数组） = ✅ 正常
+
+**修复方法（唯一正确方式）：**
+```bash
+# CLI 假阳性修复
+boss login --cdp --timeout 30
+# → boss.exe 通过 CDP 从浏览器读取 cookie，生成新的 CLI token
+
+# 修复后必须重新验证：
+boss.exe --role recruiter me
+boss.exe --role recruiter --platform zhipin hr jobs list   # 必须返回有数据的数组
+```
+
+> **禁止的行为：** `hr jobs list` 返回空数据后，不要尝试用浏览器 API 拦截/CDP 直接操作来替代 CLI。必须先修好 CLI。如果 `boss login --cdp` 也失败（浏览器也未登录），引导用户重新扫码。
+
+#### 场景 2：CDP 浏览器假登录（页面显示了但实际未登录）
+
+**现象：** CDP 连接成功（`http://localhost:9222/json/version` 正常），页面能打开 `https://www.zhipin.com`，但页面显示的是未登录态（出现"请登录"或登录按钮，而非聊天列表）。
+
+**诊断方法：**
+```python
+# CDP 检查页面是否真正登录 — 检查 cookie 或页面元素
+from patchright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://localhost:9222")
+    pg = browser.contexts[0].pages[0]
+    pg.goto("https://www.zhipin.com/web/chat/index", timeout=15000)
+    
+    # 方法 1：检查 cookie
+    cookies = pg.context.cookies()
+    zp_at = [c for c in cookies if c['name'] == 'zp_at']
+    zp_token = [c for c in cookies if c['name'] == 'zp_token']
+    has_login_cookies = bool(zp_at) or bool(zp_token)
+    
+    # 方法 2：检查页面文本（无登录态时页面会显示"请登录"等字样）
+    page_text = pg.evaluate("document.body.innerText")
+    no_login_keywords = ["请登录", "登录", "注册", "扫码登录"]
+    is_logged_in = not any(kw in page_text for kw in no_login_keywords) and "沟通" in page_text
+```
+
+**修复方法：**
+
+| 原因 | 修复 |
+|:-----|:-----|
+| `--user-data-dir` 路径变了，之前保存的 cookie 丢失 | 用回原来的路径 |
+| cookie 过期（BOSS 强制登出） | 导航到 `https://www.zhipin.com`，引导用户扫码登录 |
+| 浏览器新开 profile 没有登录过 | 同上，扫码登录 |
+
+```bash
+# 浏览器未登录时的标准修复流程
+# 1. 导航到 BOSS 首页
+# 2. 提示用户扫码登录
+# 3. 登录后验证
+# 4. 然后 boss login --cdp 同步 CLI
+```
+
+#### 场景 3：CLI 和 CDP 浏览器登录态不同步
+
+这是最容易被忽视的问题，因为两个 session 独立。
+
+**「CLI 登录了但浏览器未登录」的典型情景：**
+- 上次用了 `boss login`（非 `--cdp` 方式），CLI token 有效
+- 但浏览器用新的 `--user-data-dir` 从未登录过 BOSS
+
+→ 无法用 `boss login --cdp` 同步，因为浏览器没有 cookie
+
+**「浏览器登录了但 CLI 未登录」的典型情景：**
+- 用户手动在 Edge 中登录了 BOSS
+- 但从未执行过 `boss login --cdp`
+- CLI 中没有有效 token
+
+→ 执行 `boss login --cdp --timeout 30` 即可修补
+
+**修复一览表：**
+
+| CLI | 浏览器 | 方案 |
+|:----|:-------|:-----|
+| ✅ 已登录 | ✅ 已登录 | 两者都正常，无需操作 |
+| ❌ 未登录 | ✅ 已登录 | `boss login --cdp --timeout 30`（从浏览器拾取） |
+| ✅ 已登录 | ❌ 未登录 | 导航到 zhipin.com 引导扫码，然后 `boss login --cdp` |
+| ❌ 未登录 | ❌ 未登录 | 导航到 zhipin.com 引导扫码，然后 `boss login --cdp` |
 
 ---
 
