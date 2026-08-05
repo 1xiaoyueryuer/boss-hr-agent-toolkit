@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "policy_version": "abc-education-v1",
+  "job_match_weight": 0.85,
+  "education_weight": 0.15,
+  "unknown_school_score": 70,
+  "importance_weights": {
+    "must": 5,
+    "core": 3,
+    "preferred": 1
+  },
+  "status_values": {
+    "met": 1.0,
+    "partial": 0.6,
+    "unverified": 0.5,
+    "not_met": 0.0
+  },
+  "degree_bonus": {
+    "硕士": 8,
+    "博士": 12
+  },
+  "education_hard_pass_required": true,
+  "decision_rules": {
+    "A": {
+      "min_job_match_score": 85,
+      "require_all_must_met": true,
+      "require_all_core_met": true,
+      "no_significant_unverified": true,
+      "education_hard_pass": true
+    },
+    "B": {
+      "min_job_match_score": 60,
+      "no_must_not_met": true,
+      "education_hard_pass": "no_explicit_fail"
+    },
+    "C": "any_must_not_met_or_job_match_below_60_or_education_hard_fail_or_no_track"
+  }
+}

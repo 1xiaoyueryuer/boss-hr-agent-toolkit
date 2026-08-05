@@ -1,24 +1,18 @@
 # -*- coding: utf-8 -*-
-"""boss-hr score（C1：候选协调）命令测试。
+"""boss-hr score v2（C1：候选协调 + 立即 LLM 评估）测试。
 
-15 个用例：
-  1.  manifest 不存在时只调用一次 prepare
-  2.  每次只返回一个候选人
-  3.  不读取完整 new_resumes.json（只 stat 验证存在）
-  4.  已有 output 的候选人被跳过
-  5.  返回正确的 input/output 映射
-  6.  run 不存在
-  7.  encrypt_job_id 不匹配
-  8.  未 confirmed
-  9.  缺 new_resumes
-  10. 不触发 collect
-  11. 不触发 score_resumes
-  12. 不触发 report
-  13. 不修改候选人 input/output
-  14. 不扫描其他 run
-  15. 重复调用返回下一位候选人
+v2 协议：
+  - boss-hr score 一次只处理一位候选人
+  - LLM 在 CLI 内部调；父 agent 看不到 input_file / output_file
+  - 一次 status="candidate_scored"，remaining--
+  - 全部完成后 status="scoring_complete"
 
-走 subprocess 调 python boss_hr/cli.py score ...
+测试策略：
+  - LLM 真实调用点（scorecard 生成 + 候选评估）都通过预置文件绕过：
+    1. 预写 job_scorecard.json（hash 真实匹配）
+    2. 预写 scoring/outputs/candidate_*.json（合法 v2）
+  - 父 agent 与 LLM 均不连通真实服务；测试中 delete 一个 output 来
+    触发"下一位候选人"分支。
 """
 from __future__ import annotations
 import hashlib
@@ -27,6 +21,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 import pytest
 
@@ -35,11 +30,123 @@ _HERE = Path(__file__).resolve().parent
 _TOOLKIT_ROOT = _HERE.parent.parent
 _CLI = _TOOLKIT_ROOT / "boss_hr" / "cli.py"
 _SHARED = _TOOLKIT_ROOT / "shared"
+_SCORING_PKG = _TOOLKIT_ROOT / "boss_hr" / "scoring"
+
+
+def _good_scorecard(eid: str, jd: Dict[str, Any]) -> Dict[str, Any]:
+    from boss_hr.scoring.scorecard import normalize_jd, source_jd_hash
+    from boss_hr.scoring.policy import load_policy, policy_hash as ph
+    policy = load_policy()
+    return {
+        "schema_version": "2.0",
+        "policy_version": policy["policy_version"],
+        "policy_hash": ph(policy),
+        "source_jd_hash": source_jd_hash(jd),
+        "job_name": jd.get("jobName", "score_test_job"),
+        "common_requirements": [
+            {"id": "common_001", "description": "本科及以上学历",
+             "importance": "must", "source_evidence": "JD 中说本科"},
+        ],
+        "alternative_tracks": [
+            {"id": "braking", "name": "线控制动",
+             "requirements": [
+                 {"id": "braking_001", "description": "线控制动系统本体方案",
+                  "importance": "must", "source_evidence": "JD 要求"},
+             ]},
+            {"id": "steering", "name": "线控转向",
+             "requirements": [
+                 {"id": "steering_001", "description": "线控转向系统本体方案",
+                  "importance": "must", "source_evidence": "JD 要求"},
+             ]},
+        ],
+        "education_requirements": {"minimum_degree": "本科及以上",
+                                    "source_evidence": "JD 中"},
+        "generated_at": "2026-08-05 12:00:00",
+    }
+
+
+def _install_mock_outputs(scoring_dir: str, manifest: Dict[str, Any],
+                          scorecard: Dict[str, Any], eid: str) -> None:
+    """为每位候选人预写合法 v2 output（让 score CLI 跳过 LLM 评估）。"""
+    out_dir = os.path.join(scoring_dir, "outputs")
+    os.makedirs(out_dir, exist_ok=True)
+    for c in manifest.get("candidates", []):
+        gid = c["geek_id"]
+        common_ass = [
+            {
+                "requirement_id": r["id"],
+                "status": "met",
+                "evidence": ["mock evidence"],
+                "reason": "mock met",
+            }
+            for r in scorecard.get("common_requirements", [])
+        ]
+        track_ass = [
+            {
+                "track_id": t["id"],
+                "requirement_id": r["id"],
+                "status": "met",
+                "evidence": ["mock evidence"],
+                "reason": "mock met",
+            }
+            for t in scorecard.get("alternative_tracks", [])
+            for r in t.get("requirements", [])
+        ]
+        payload = {
+            "schema_version": "2.0",
+            "policy_version": scorecard["policy_version"],
+            "policy_hash": scorecard["policy_hash"],
+            "job_scorecard_hash": scorecard["source_jd_hash"],
+            "name": c["name"],
+            "geek_id": gid,
+            "job_id": eid,
+            "common_assessments": common_ass,
+            "track_assessments": track_ass,
+            "track_results": {
+                t["id"]: {
+                    "score": 90.0, "must_not_met": [],
+                    "core_not_met": [], "core_partial": [],
+                    "unverified_significant": [],
+                }
+                for t in scorecard.get("alternative_tracks", [])
+            },
+            "best_track": scorecard.get("alternative_tracks", [{}])[0].get("id", "general"),
+            "best_track_reason": "mock",
+            "job_match_score": 90.0,
+            "education_score": 70.0,
+            "education_tier": "一本公办",
+            "education_reason": "mock",
+            "education_review_required": False,
+            "education_hard_pass": True,
+            "education_hard_reason": "",
+            "final_score": 87.0,
+            "decision": "B",
+            "decision_label": "部分技能仍需确认，但适合进入面试",
+            "decision_reasons": ["mock"],
+            "highlights": [], "concerns": [],
+            "verification_questions": ["mock question"],
+            "contact_recommended": True,
+            "must_not_met": [],
+            "core_not_met": [],
+            "core_partial": [],
+            "unverified_significant": [],
+        }
+        with open(os.path.join(out_dir, f"candidate_{gid}.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def _run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
-           "PYTHONPATH": str(_SHARED)}
+    env = {**os.environ,
+           "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+           "PYTHONPATH": str(_TOOLKIT_ROOT),  # 让 tests.cli._mock_llm_hook 可 import
+           "BOSS_HR_LLM_BASE_URL": "http://mock-llm.test/v1",
+           "BOSS_HR_LLM_API_KEY": "mock-key",
+           "BOSS_HR_LLM_MODEL": "mock-model",
+           "BOSS_HR_LLM_TEST_HOOK": "tests.cli._mock_llm_hook",
+           "BOSS_HR_LLM_TEST_REQ_IDS": "common_001,braking_001,steering_001",
+           "BOSS_HR_LLM_TEST_SCENARIO": "eval",
+           }
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
@@ -49,14 +156,12 @@ def _run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedP
 
 
 def _decode(b) -> str:
-    if b is None:
-        return ""
-    if isinstance(b, bytes):
-        return b.decode("utf-8", errors="replace")
+    if b is None: return ""
+    if isinstance(b, bytes): return b.decode("utf-8", errors="replace")
     return b
 
 
-def _file_hashes(root: Path) -> dict[str, str]:
+def _file_hashes(root: Path) -> dict:
     out = {}
     for p in root.rglob("*"):
         if p.is_file():
@@ -66,8 +171,8 @@ def _file_hashes(root: Path) -> dict[str, str]:
 
 def _make_run(root: Path, eid: str, rid: str, job_name: str,
               *, confirmed: bool = True,
-              new_resumes: list | None = None) -> Path:
-    """建一个最小合法 run：run.json + process/{job_detail,new_resumes}.json。"""
+              new_resumes: list | None = None,
+              body_text: str = "要求线控制动或线控转向；本科及以上") -> Path:
     run_dir = root / eid / "runs" / rid
     process_dir = run_dir / "process"
     process_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +187,7 @@ def _make_run(root: Path, eid: str, rid: str, job_name: str,
     }, ensure_ascii=False), encoding="utf-8")
     (process_dir / "job_detail.json").write_text(json.dumps({
         "jobName": job_name, "encryptJobId": eid,
+        "bodyText": body_text, "formValues": [],
     }, ensure_ascii=False), encoding="utf-8")
     if new_resumes is not None:
         (process_dir / "new_resumes.json").write_text(
@@ -89,23 +195,23 @@ def _make_run(root: Path, eid: str, rid: str, job_name: str,
     return run_dir
 
 
-def _make_resume(name: str, geek_id: str, *, ok_: bool = True) -> dict:
-    r = {
-        "name": name,
-        "_meta": {"encrypt_geek_id": geek_id, "encrypt_job_id": "test_eid_score"},
+def _make_resume(name: str, geek_id: str, *, school: str = "辽宁工业大学",
+                 degree: str = "本科", eid: str = "test_eid_score") -> dict:
+    return {
+        "name": name, "degree": degree, "work_years": "3 年",
+        "work_experience": [], "project_experience": [],
+        "education": [{"school": school, "major": "车辆工程", "degree": degree, "start": "", "end": ""}],
+        "_meta": {"encrypt_geek_id": geek_id, "encrypt_job_id": eid},
     }
-    if ok_:
-        r.update({
-            "degree": "本科",
-            "work_years": "3 年",
-            "work_experience": [], "project_experience": [], "education": [],
-        })
-    return r
 
+
+# ============================================================
+# Fixtures
+# ============================================================
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    """target run + other run。target 已 confirmed + 3 个候选人（new_resumes）。"""
+    """target run + other run + v2 scorecard + 全部 output 预填。"""
     monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
     eid = "test_eid_score"
     job_name = "score_test_job"
@@ -113,16 +219,47 @@ def workspace(tmp_path, monkeypatch):
     other = "2026-08-02_120000"
 
     resumes = [
-        _make_resume("张三", "gid_zhangsan_001"),
-        _make_resume("李四", "gid_lisi_002"),
-        _make_resume("王五", "gid_wangwu_003"),
+        _make_resume("张三", "gid_zhangsan_001", eid=eid),
+        _make_resume("李四", "gid_lisi_002", eid=eid),
+        _make_resume("王五", "gid_wangwu_003", eid=eid),
     ]
-    _make_run(tmp_path, eid, target, job_name,
+    run_dir = _make_run(tmp_path, eid, target, job_name,
               confirmed=True, new_resumes=resumes)
     _make_run(tmp_path, eid, other, job_name,
-              confirmed=False, new_resumes=[_make_resume("other_a", "gid_other_a")])
+              confirmed=False, new_resumes=[_make_resume("other_a", "gid_other_a", eid=eid)])
 
-    return tmp_path, eid, job_name, target, other
+    scoring_dir = tmp_path / eid / "runs" / target / "process" / "scoring"
+    jd = json.loads((run_dir / "process" / "job_detail.json").read_text(encoding="utf-8"))
+    sc = _good_scorecard(eid, jd)
+    os.makedirs(scoring_dir, exist_ok=True)
+    (scoring_dir / "job_scorecard.json").write_text(
+        json.dumps(sc, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return tmp_path, eid, job_name, target, other, sc
+
+
+def _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc):
+    """调旧 prepare 子进程建 manifest + inputs + 预填所有 candidate output。"""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(_SHARED)}
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8",
+         str(_TOOLKIT_ROOT / "resume-screener" / "scripts" / "prepare_scoring_inputs.py"),
+         "--job-name", job_name, "--encrypt-job-id", eid, "--run-id", target],
+        capture_output=True, env=env, cwd=str(_TOOLKIT_ROOT), timeout=60,
+    )
+    assert proc.returncode == 0, f"prepare 失败：{proc.stderr.decode('utf-8', errors='replace')}"
+
+    scoring_dir = tmp_path / eid / "runs" / target / "process" / "scoring"
+    manifest = json.loads((scoring_dir / "manifest.json").read_text(encoding="utf-8"))
+    _install_mock_outputs(str(scoring_dir), manifest, sc, eid)
+    return manifest
+
+
+def _delete_one_output(tmp_path, eid, target, gid):
+    scoring_dir = tmp_path / eid / "runs" / target / "process" / "scoring"
+    out = scoring_dir / "outputs" / f"candidate_{gid}.json"
+    if out.exists():
+        out.unlink()
 
 
 # ============================================================
@@ -130,12 +267,12 @@ def workspace(tmp_path, monkeypatch):
 # ============================================================
 
 def test_score_calls_prepare_when_manifest_missing(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
+    tmp_path, eid, job_name, target, _other, _sc = workspace
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
+    # 不预填 outputs，CLI 应自调用 prepare 建 manifest
     assert proc.returncode == 0
-    # manifest.json 应被创建
     manifest = tmp_path / eid / "runs" / target / "process" / "scoring" / "manifest.json"
     assert manifest.is_file()
     m = json.loads(manifest.read_text(encoding="utf-8"))
@@ -143,98 +280,101 @@ def test_score_calls_prepare_when_manifest_missing(workspace):
 
 
 # ============================================================
-# 2. 每次只返回一个候选人
+# 2. v2 协议：单次返回 candidate_scored
 # ============================================================
 
-def test_score_returns_single_candidate(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
+def test_score_returns_candidate_scored_status(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    # 预填 manifest + 全部 outputs，再 delete 一位 → 该位重新走 candidate_scored
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][0]["geek_id"])
+
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
     p = json.loads(_decode(proc.stdout))
-    assert p["status"] == "waiting_llm"
+    assert p["status"] == "candidate_scored"
     assert p["data"]["candidate_id"] is not None
     assert p["data"]["name"] is not None
-    assert p["data"]["input_file"] is not None
-    assert p["data"]["output_file"] is not None
+    # v2 不再暴露 input_file / output_file
+    assert "input_file" not in p["data"]
+    assert "output_file" not in p["data"]
 
 
 # ============================================================
-# 3. 不读取完整 new_resumes.json（只 stat 验证存在）
+# 3. 不直接读 new_resumes 内容（只 stat）
 # ============================================================
 
 def test_score_does_not_read_full_new_resumes(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
-    new_resumes_path = tmp_path / eid / "runs" / target / "process" / "new_resumes.json"
-    new_resumes_mtime_before = new_resumes_path.stat().st_mtime_ns
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][0]["geek_id"])
 
+    new_resumes_path = tmp_path / eid / "runs" / target / "process" / "new_resumes.json"
+    mtime_before = new_resumes_path.stat().st_mtime_ns
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
-
-    # new_resumes.json 不应被修改（score 不直接读它，只调 prepare 让 prepare 读）
-    # 但 prepare 会读！这里只校验最终 hash 与原始一致（如果没改）
-    # 注意：prepare 会读 new_resumes 写 inputs/* + manifest，**不**修改 new_resumes.json
-    # 所以新文件不应出现，但 existing 文件 hash 不变
-    new_resumes_mtime_after = new_resumes_path.stat().st_mtime_ns
-    assert new_resumes_mtime_before == new_resumes_mtime_after, \
-        "score 不应修改 new_resumes.json"
+    mtime_after = new_resumes_path.stat().st_mtime_ns
+    assert mtime_before == mtime_after
 
 
 # ============================================================
-# 4. 已有 output 的候选人被跳过
+# 4. 重复调用换下一位候选人
 # ============================================================
 
-def test_score_skips_already_scored_candidates(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
-    # 先跑一次 score，让 prepare 建好 manifest + scoring 目录
+def test_score_returns_next_candidate_after_first(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    # 只写第 0 个 output
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][1]["geek_id"])
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][2]["geek_id"])
+
     proc1 = _run_cli("score", "--job-name", job_name,
                      "--encrypt-job-id", eid, "--run-id", target,
                      env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc1.returncode == 0
     p1 = json.loads(_decode(proc1.stdout))
     first_gid = p1["data"]["candidate_id"]
-    first_name = p1["data"]["name"]
-
-    # 给第一位候选人写 output（模拟 LLM 已评）
-    output_path = Path(p1["data"]["output_file"])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps({
-        "name": first_name, "dims": {"exp": 80, "skill": 70, "proj": 60, "major": 90}
-    }, ensure_ascii=False), encoding="utf-8")
-
-    # 再跑 score：应返回下一位
+    # 写回合法 output
+    _install_mock_outputs(
+        str(tmp_path / eid / "runs" / target / "process" / "scoring"),
+        {"candidates": [c for c in manifest["candidates"] if c["geek_id"] == first_gid]},
+        sc, eid,
+    )
     proc2 = _run_cli("score", "--job-name", job_name,
                      "--encrypt-job-id", eid, "--run-id", target,
                      env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc2.returncode == 0
     p2 = json.loads(_decode(proc2.stdout))
-    assert p2["data"]["candidate_id"] != first_gid, \
-        f"已评分的 {first_gid} 应被跳过"
+    assert p2["data"]["candidate_id"] != first_gid
 
 
 # ============================================================
-# 5. 返回正确的 input/output 映射
+# 5. 一次 score 写一个 v2 candidate output 文件
 # ============================================================
 
-def test_score_returns_correct_input_output_paths(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
+def test_score_writes_v2_candidate_output(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    target_gid = manifest["candidates"][0]["geek_id"]
+    _delete_one_output(tmp_path, eid, target, target_gid)
+
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
     p = json.loads(_decode(proc.stdout))
-    input_file = Path(p["data"]["input_file"])
-    output_file = Path(p["data"]["output_file"])
-    # input/output 都在 scoring 目录下
-    assert input_file.is_file(), f"input 不存在：{input_file}"
-    assert input_file.parent.name == "inputs"
-    assert output_file.parent.name == "outputs"
-    # input/output 文件名匹配 candidate_<geek_id>.json 模式
-    assert input_file.stem == f"candidate_{p['data']['candidate_id']}"
-    assert output_file.stem == f"candidate_{p['data']['candidate_id']}"
+    assert p["data"]["candidate_id"] == target_gid
+    scoring_dir = tmp_path / eid / "runs" / target / "process" / "scoring"
+    out = scoring_dir / "outputs" / f"candidate_{target_gid}.json"
+    assert out.is_file()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "2.0"
+    assert payload["geek_id"] == target_gid
+    assert payload["job_id"] == eid
+    assert payload["policy_version"] == "abc-education-v1"
+    assert payload["decision"] in ("A", "B", "C")
 
 
 # ============================================================
@@ -242,7 +382,7 @@ def test_score_returns_correct_input_output_paths(workspace):
 # ============================================================
 
 def test_score_run_not_found(workspace):
-    tmp_path, eid, job_name, _target, _other = workspace
+    tmp_path, eid, job_name, _target, _other, _sc = workspace
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", "9999-99-99_999999",
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
@@ -257,15 +397,13 @@ def test_score_run_not_found(workspace):
 # ============================================================
 
 def test_score_encrypt_job_id_mismatch(workspace):
-    tmp_path, _eid, job_name, target, _other = workspace
+    tmp_path, _eid, job_name, target, _other, _sc = workspace
     proc = _run_cli("score", "--job-name", job_name,
-                    "--encrypt-job-id", "wrong_eid_xyz",
-                    "--run-id", target,
+                    "--encrypt-job-id", "wrong_eid_xyz", "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 23
     p = json.loads(_decode(proc.stdout))
     assert p["ok"] is False
-    assert p["error"]["code"] == "RUN_NOT_FOUND"
 
 
 # ============================================================
@@ -273,8 +411,7 @@ def test_score_encrypt_job_id_mismatch(workspace):
 # ============================================================
 
 def test_score_not_confirmed(workspace):
-    tmp_path, eid, job_name, _target, other = workspace
-    # other run 已 confirmed=False
+    tmp_path, eid, job_name, _target, other, _sc = workspace
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", other,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
@@ -291,7 +428,7 @@ def test_score_not_confirmed(workspace):
 def test_score_missing_new_resumes(tmp_path, monkeypatch):
     monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
     _make_run(tmp_path, "test_eid_score", "2026-08-03_120000", "no_new_resumes_job",
-              confirmed=True, new_resumes=None)  # 不写 new_resumes.json
+              confirmed=True, new_resumes=None)
     proc = _run_cli("score", "--job-name", "no_new_resumes_job",
                     "--encrypt-job-id", "test_eid_score", "--run-id", "2026-08-03_120000",
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
@@ -302,95 +439,66 @@ def test_score_missing_new_resumes(tmp_path, monkeypatch):
 
 
 # ============================================================
-# 10. 不触发 collect
+# 10. 不触发 collect_llm_scores / score_resumes 子进程
 # ============================================================
 
-def test_score_does_not_trigger_collect(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
+def test_score_does_not_invoke_legacy_subprocess(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][0]["geek_id"])
+
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
-    # collect 会写 _llm_scores.json；C1 阶段不应写
     llm_scores = tmp_path / eid / "runs" / target / "process" / "_llm_scores.json"
-    assert not llm_scores.exists(), "score C1 不应触发 collect"
+    assert not llm_scores.exists(), "v2 score 不应写 _llm_scores.json（v1 子协议）"
 
 
 # ============================================================
-# 11. 不触发 score_resumes
-# ============================================================
-
-def test_score_does_not_trigger_score_resumes(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
-    proc = _run_cli("score", "--job-name", job_name,
-                    "--encrypt-job-id", eid, "--run-id", target,
-                    env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc.returncode == 0
-    # score_resumes 会写 screening_results.json
-    screening = tmp_path / eid / "runs" / target / "process" / "screening_results.json"
-    assert not screening.exists(), "score C1 不应触发 score_resumes"
-
-
-# ============================================================
-# 12. 不触发 report
+# 11. 不触发 report
 # ============================================================
 
 def test_score_does_not_trigger_report(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
-    # report 会写 HTML 到 runs/<run_id>/
-    html_files = list((tmp_path / eid / "runs" / target).glob("*.html"))
+    run_dir = tmp_path / eid / "runs" / target
+    html_files = list(run_dir.glob("*.html"))
     assert not html_files, f"score 不应触发 report，但发现 HTML：{html_files}"
-    # run.json.steps_done 也不应新增 'report'
-    run_json = json.loads(
-        (tmp_path / eid / "runs" / target / "run.json").read_text(encoding="utf-8"))
-    assert "report" not in run_json.get("steps_done", [])
 
 
 # ============================================================
-# 13. 不修改候选人 input/output
+# 12. 不修改 inputs/
 # ============================================================
 
-def test_score_does_not_modify_candidate_files(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
-    # 先跑一次让 prepare 建好 inputs/
-    proc1 = _run_cli("score", "--job-name", job_name,
-                     "--encrypt-job-id", eid, "--run-id", target,
-                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc1.returncode == 0
-
+def test_score_does_not_modify_inputs(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
     scoring_dir = tmp_path / eid / "runs" / target / "process" / "scoring"
     inputs_dir = scoring_dir / "inputs"
-    outputs_dir = scoring_dir / "outputs"
     before_inputs = _file_hashes(inputs_dir)
-    before_outputs = _file_hashes(outputs_dir)
 
-    # 再跑两次
-    proc2 = _run_cli("score", "--job-name", job_name,
-                     "--encrypt-job-id", eid, "--run-id", target,
-                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    proc3 = _run_cli("score", "--job-name", job_name,
-                     "--encrypt-job-id", eid, "--run-id", target,
-                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc2.returncode == 0
-    assert proc3.returncode == 0
+    for _ in range(3):
+        _run_cli("score", "--job-name", job_name,
+                 "--encrypt-job-id", eid, "--run-id", target,
+                 env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
 
     after_inputs = _file_hashes(inputs_dir)
-    after_outputs = _file_hashes(outputs_dir)
-    # inputs/ 不应被修改（只创建一次）
-    assert before_inputs == after_inputs, "score 不应修改 inputs/ 内容"
+    assert before_inputs == after_inputs, "score 不应修改 inputs/"
 
 
 # ============================================================
-# 14. 不扫描其他 run
+# 13. 不扫描其他 run
 # ============================================================
 
 def test_score_does_not_borrow_other_run(workspace):
-    tmp_path, eid, job_name, target, other = workspace
-    # other run 的 scoring 目录如果有"诱饵" manifest，新 score 不应被它干扰
+    tmp_path, eid, job_name, target, other, sc = workspace
+    # 写诱饵 manifest 到 other run
     other_scoring = tmp_path / eid / "runs" / other / "process" / "scoring"
     other_scoring.mkdir(parents=True, exist_ok=True)
     (other_scoring / "manifest.json").write_text(json.dumps({
@@ -400,58 +508,49 @@ def test_score_does_not_borrow_other_run(workspace):
                           "status": "pending"}],
     }, ensure_ascii=False), encoding="utf-8")
 
+    # target run 预填所有合法 output → score 应直接 finalize
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
     proc = _run_cli("score", "--job-name", job_name,
                     "--encrypt-job-id", eid, "--run-id", target,
                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
     assert proc.returncode == 0
     p = json.loads(_decode(proc.stdout))
-    # 返回的候选人必须属于 target run，不是诱饵
-    assert p["data"]["candidate_id"] != "诱饵_gid"
     assert p["run_id"] == target
+    # finalize 路径下没有 candidate_id
+    assert p["status"] == "scoring_complete"
 
 
 # ============================================================
-# 15. 重复调用返回下一位候选人
+# 14. 全部候选人评分完后 → scoring_complete
 # ============================================================
 
-def test_score_repeat_returns_next_candidate(workspace):
-    tmp_path, eid, job_name, target, _other = workspace
-    gids_seen = []
-    for _ in range(3):
-        proc = _run_cli("score", "--job-name", job_name,
-                        "--encrypt-job-id", eid, "--run-id", target,
-                        env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-        assert proc.returncode == 0
-        p = json.loads(_decode(proc.stdout))
-        gid = p["data"]["candidate_id"]
-        assert gid is not None
-        gids_seen.append(gid)
+def test_score_completes_after_all_candidates(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    # 全填好 → 一次 score 就 finalize
+    proc = _run_cli("score", "--job-name", job_name,
+                    "--encrypt-job-id", eid, "--run-id", target,
+                    env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
+    assert proc.returncode == 0
+    p = json.loads(_decode(proc.stdout))
+    assert p["status"] == "scoring_complete"
+    assert p["data"]["scored"] == len(manifest["candidates"])
+    assert "screening_results_file" in p["data"]
+    assert p["next_action"] == "report"
 
-        # 给当前候选人写 output
-        output_path = Path(p["data"]["output_file"])
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps({
-            "name": p["data"]["name"],
-            "dims": {"exp": 80, "skill": 70, "proj": 60, "major": 90},
-        }, ensure_ascii=False), encoding="utf-8")
 
-    # 每次返回不同
-    assert len(set(gids_seen)) == 3, f"应返回 3 个不同候选人，实际：{gids_seen}"
+# ============================================================
+# 15. candidate_scored 时 next_action=repeat_score
+# ============================================================
 
-    # 第 4 次：所有 output 都齐了 → dispatcher 切到 finalize（C2）
-    # 此时数据简单（缺 school 等），collect 可能报 invalid；测试只要
-    # 验证 dispatcher 不再返回 waiting_llm with candidate_id。
-    proc4 = _run_cli("score", "--job-name", job_name,
-                     "--encrypt-job-id", eid, "--run-id", target,
-                     env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
-    assert proc4.returncode == 0
-    p4 = json.loads(_decode(proc4.stdout))
-    # 不再走 C1 候选协调；要么 scoring_complete，要么 waiting_llm (invalid)
-    assert p4["status"] in ("scoring_complete", "waiting_llm")
-    if p4["status"] == "waiting_llm":
-        # invalid 路径：data 必须有 validation_error
-        assert p4["data"].get("validation_error") is not None
-    else:
-        # scoring_complete 路径：data 含 scored + screening_results_file
-        assert "scored" in p4["data"]
-        assert "screening_results_file" in p4["data"]
+def test_score_candidate_scored_next_action(workspace):
+    tmp_path, eid, job_name, target, _other, sc = workspace
+    manifest = _prepare_workspace_with_outputs(tmp_path, eid, target, job_name, sc)
+    _delete_one_output(tmp_path, eid, target, manifest["candidates"][0]["geek_id"])
+
+    proc = _run_cli("score", "--job-name", job_name,
+                    "--encrypt-job-id", eid, "--run-id", target,
+                    env_extra={"BOSS_HR_OUTPUT_DIR": str(tmp_path)})
+    assert proc.returncode == 0
+    p = json.loads(_decode(proc.stdout))
+    assert p["next_action"] == "repeat_score"

@@ -187,59 +187,109 @@ def load_high_score_candidates(job_dir, run_id, score_threshold, only_names=None
     screen_path = os.path.join(run_dir, 'process', 'screening_results.json')
 
     high = []
+    missing_v2 = []  # v2: --only-names 中不存在于 v2 screening results 的名字
     if os.path.exists(screen_path):
         screen = json.load(open(screen_path, encoding='utf-8'))
+        is_v2 = screen.get("schema_version") == "2.0"
         cands = screen.get('candidates') or []
         for c in cands:
-            score = c.get('total', 0)
-            if score < score_threshold:
-                continue
-            high.append({
-                'name': c.get('name', ''),
-                'score': score,
-                'tier': c.get('tier', ''),
-                'school': c.get('school', ''),
-                'work_years': c.get('work_years', ''),
-                'current_role': c.get('current_role', ''),
-                'encrypt_geek_id': '',  # 后补
-            })
+            if is_v2:
+                # v2 协议：招呼资格 = decision in (A,B) 且 contact_recommended=true。
+                # --threshold 完全不参与资格判断。
+                if not c.get("contact_recommended", False):
+                    continue
+                decision = c.get("decision", "C")
+                if decision not in ("A", "B"):
+                    continue
+                score = c.get("final_score", 0)
+                high.append({
+                    'name': c.get('name', ''),
+                    'score': score,
+                    'tier': decision,
+                    'school': c.get('education_tier', ''),
+                    'work_years': '',
+                    'current_role': c.get('best_track', '') or '',
+                    'encrypt_geek_id': '',
+                })
+            else:
+                # v1 旧协议：仅看 score >= threshold（向后兼容）。
+                score = c.get('total', 0)
+                if score < score_threshold:
+                    continue
+                high.append({
+                    'name': c.get('name', ''),
+                    'score': score,
+                    'tier': c.get('tier', ''),
+                    'school': c.get('school', ''),
+                    'work_years': c.get('work_years', ''),
+                    'current_role': c.get('current_role', ''),
+                    'encrypt_geek_id': '',
+                })
 
-    # ★ --only-names 模式兜底：screening 里没的人，从 candidate_pool.json 补
+    # ★ v2 --only-names：与本 run v2 screening_results 的合法集合（A/B + contact_recommended=true）
+    # 取交集。名单中 C 排除；名单中不在 v2 screening_results 的人 warning 跳过；
+    # 禁止从 candidate_pool.json / resumes_master.json 等补招呼资格（仅用于反查
+    # encryptGeekId，不用于"补 v2 资格"）。
+    # ★ v1 --only-names：保持旧 pool 兜底，向后兼容。
+    _is_v2_screen = False
+    if os.path.exists(screen_path):
+        try:
+            with open(screen_path, "r", encoding="utf-8") as _f:
+                _is_v2_screen = json.load(_f).get("schema_version") == "2.0"
+        except Exception:
+            _is_v2_screen = False
     if only_names:
         only_set = {n.strip() for n in only_names}
         before = len(high)
-        high = [h for h in high if h['name'].strip() in only_set]
-        existing_names = {h['name'].strip() for h in high}
-        missing = [n for n in only_set if n not in existing_names]
-        # missing 非空就从 pool 补（即使 before=0 也要补，否则 --only-names 模式完全失效）
-        if missing:
-            pool_path = os.path.join(job_dir, 'state', 'candidate_pool.json')
-            if os.path.exists(pool_path):
-                pool = json.load(open(pool_path, encoding='utf-8')).get('items', {})
-                name_to_item = {}
-                for k, item in pool.items():
-                    n = item.get('name', '').strip()
-                    if n:
-                        name_to_item[n] = item
-                for n in missing:
-                    item = name_to_item.get(n)
-                    if item:
-                        high.append({
-                            'name': n,
-                            'score': 0,
-                            'tier': 'from-pool',
-                            'school': item.get('school_name', '') or item.get('school', ''),
-                            'work_years': item.get('work_years', ''),
-                            'current_role': item.get('current_role', '') or item.get('expectPosition', ''),
-                            'encrypt_geek_id': item.get('encrypt_geek_id', ''),
-                            'from_pool_only': True,
-                        })
+        if _is_v2_screen:
+            # v2：仅按本 run screening 的合法集合过滤
+            high = [h for h in high if h['name'].strip() in only_set]
+            existing_names = {h['name'].strip() for h in high}
+            for n in only_set - existing_names:
+                print(f'⚠ --only-names 跳过「{n}」：不在本 run v2 screening_results.json 的合法集合（A/B + contact_recommended=true）中')
+        else:
+            # v1：旧 pool 兜底
+            high = [h for h in high if h['name'].strip() in only_set]
+            existing_names = {h['name'].strip() for h in high}
+            missing = [n for n in only_set if n not in existing_names]
+            if missing:
+                pool_path = os.path.join(job_dir, 'state', 'candidate_pool.json')
+                if os.path.exists(pool_path):
+                    pool = json.load(open(pool_path, encoding='utf-8')).get('items', {})
+                    name_to_item = {}
+                    for k, item in pool.items():
+                        n = item.get('name', '').strip()
+                        if n:
+                            name_to_item[n] = item
+                    for n in missing:
+                        item = name_to_item.get(n)
+                        if item:
+                            high.append({
+                                'name': n,
+                                'score': 0,
+                                'tier': 'from-pool',
+                                'school': item.get('school_name', '') or item.get('school', ''),
+                                'work_years': item.get('work_years', ''),
+                                'current_role': item.get('current_role', '') or item.get('expectPosition', ''),
+                                'encrypt_geek_id': item.get('encrypt_geek_id', ''),
+                                'from_pool_only': True,
+                            })
         print(f'按 --only-names 过滤：{before} → {len(high)} 人')
+
+    # v2 排序：A → B → 同类 final_score 倒序（即便 --only-names 也按此排序，
+    # 让 max_count 截断稳定）。
+    _rank = {"A": 0, "B": 1}
+    high.sort(key=lambda h: (
+        _rank.get(h.get("tier", ""), 99),
+        -float(h.get("score", 0)),
+        h.get("name", ""),
+    ))
 
     # ★ 关键：name → encrypt_geek_id 反查（BOSS 唯一身份）
     # 优先 recommend_geek_ids.json（权威）；兜底 candidate_pool.json / state/resumes_master.json
+    # 仅用于反查；v2 --only-names 已不再从 pool 补资格（避免绕过 v2 资格判断）。
     geek_index = _build_geek_id_index(job_dir, run_id)
-    # 补 candidate_pool / resumes_master
+    # 补 candidate_pool / resumes_master（仅 geek_id 反查）
     for fallback in [
         os.path.join(job_dir, 'state', 'candidate_pool.json'),
         os.path.join(job_dir, 'state', 'resumes_master.json'),
@@ -1136,8 +1186,12 @@ def auto_greet(job_name=DEFAULT_JOB, score_threshold=70, max_count=10,
                  'school': '', 'work_years': '', 'current_role': '',
                  'from_pool_only': True, 'from_stub': True} for n in only_names]
 
-    # --only-names 模式下保留用户给定顺序，否则按 score 降序
-    if not only_names:
+    # --only-names 模式下保留用户给定顺序，否则按 v2 规则排序：
+    #   A 优先 → B 其次 → 同类 final_score 倒序。
+    # v1 旧路径仍按 score 倒序。
+    # 注：load_high_score_candidates 已按 v2 规则排序；此处仅对 v1 路径做
+    # 旧式 score 倒序（load_high_score_candidates 在 v1 模式不排序）。
+    if not only_names and not _is_v2_screen:
         high.sort(key=lambda x: -x['score'])
     if len(high) > max_count:
         log(output, f'高分 {len(high)} > max_count {max_count}，取前 {max_count}')

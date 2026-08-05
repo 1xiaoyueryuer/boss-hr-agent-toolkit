@@ -240,50 +240,128 @@ print(check_login(session))    # {'logged_in': True/False, 'cookies': {...}, ...
 
 ---
 
-## 🧠 评分系统
-
-### 当前权重（5 维加权求和）
+## 🧠 评分系统（v2）
 
 > [!NOTE]
-> 当前 `resume-screener/scripts/score_resumes.py` 已统一为**单套 5 维权重**（合计 100%）。如需区分岗位类型，建议在 `WEIGHTS` 常量上扩展，不要直接硬编码多套。
+> **v2 协议**（2026-08-05）：评分由 `boss-hr score` 内部**独立 LLM worker**
+> 完成。父 agent 不再读 `input_file`、自己调 LLM、写 `output_file`。
+> 一次 `boss-hr score` 评一位候选人；状态机为
+> `candidate_scored → repeat_score` / `scoring_complete → report`。
+
+### 数据流
+
+```
+new_resumes.json
+  → prepare_scoring_inputs.py
+  → scoring/{inputs,outputs,manifest.json} + job_scorecard.json
+  → boss-hr score（v2 内部独立 LLM worker）
+      ├─ 读 job_scorecard.json（每个 run 仅生成一次，hash 复用）
+      ├─ 调 LLM 评估候选人 evidence mapping
+      ├─ Python 确定性算 best_track、job_match_score、education_score、final_score
+      ├─ Python 决策 A/B/C（不只看分数）
+      └─ 原子写 scoring/outputs/candidate_<geek_id>.json（schema v2）
+  → 全部完成后合成 screening_results.json（schema v2）
+  → boss-hr report → HTML（A/B/C 分组 + 评分卡摘要）
+  → boss-hr greet → A/B 招呼，C 永远排除
+```
+
+### 评分公式
 
 | 维度 | 权重 | 评分方法 |
 |------|:----:|---------|
-| 学历 (edu) | **25%** | `validate_score()` 用 `school_tier.py` 分档表**强制覆盖** LLM 给的 edu 分；硕士 +8% |
-| 工作经验 (exp) | **25%** | 相关经验年限 + 业务匹配度 |
-| 专业技能 (skill) | **25%** | JD 技能覆盖率 |
-| 项目经历 (proj) | **15%** | 项目复杂度 + 相关性 |
-| 专业匹配 (major) | **10%** | 对口=100%，相关=80%，无关=30-60% |
+| 岗位匹配 `job_match_score` | **85%** | Σ(importance_weight × status_value) / Σ(importance_weight) × 100；按 `best_track` 单独算 |
+| 学历偏好 `education_score` | **15%** | `school_tier` 查表 + 硕士/博士层次加分；未收录学校用中性分 + 需人工确认 |
+| 学历硬门槛 | — | JD 规定最低学历时单独检查（不参与加权） |
 
-### 总分与档位
+`final_score = job_match_score × 0.85 + education_score × 0.15`
 
-- `weighted[d] = round(dims[d] * WEIGHTS[d], 2)`
-- `total = round(sum(weighted.values()), 1)`
-- 档位阈值：`>= 70` → **推荐**　`>= 60` → **待定**　否则 → **不推荐**
-- 全部逻辑在 `resume-screener/scripts/score_resumes.py`，由 `tests/` 下的单元测试用例覆盖：`python -m pytest tests/`
+### importance / status 取值
 
-### 学历分档表
+`importance`：`must`（5）/ `core`（3）/ `preferred`（1）
+`status`：`met`（1.0）/ `partial`（0.6）/ `unverified`（0.5）/ `not_met`（0.0）
 
-| 档次 | 分数 | 示例 |
-|------|:----:|------|
-| C9 | 100 | 清华、北大、复旦、交大等 |
-| 985 | 92 | 其他 985 高校 |
-| 211 | 85 | 其他 211 高校 |
-| 双一流 | 77 | 双一流建设高校 |
-| 一本公办 | 71 | 省属重点一本 |
-| 二本公办 | 62 | 普通公办二本 |
-| 民办本科 | 53 | 民办高校、独立学院 |
+`must` 只能来自 JD 明确"必须 / 硬性 / 最低 / 必备 / 要求"措辞；
+不得因为"行业里一般很重要"就升为 must。
 
-> [!IMPORTANT]
-> 学历评分必须严格执行分档表，**禁止给所有人相同分数**。
+### A/B/C 决策（不只看 final_score）
 
-### 行动建议规则
+| 档位 | 条件 |
+|---|---|
+| **A**：各项都很合适，建议直接进入面试 | 存在 best_track + 所有 must/core=met + job_match ≥ 85 + 学历硬门槛通过 |
+| **B**：部分技能仍需确认，但适合进入面试 | 必须有 best_track + 无 must=not_met + job_match ≥ 60 + 允许 partial/unverified |
+| **C**：完全不合适，不用考虑 | 任一 must=not_met / job_match < 60 / 学历硬门槛失败 / 无合理方向 |
 
-输出格式：`📊 排名表（含 5 维加权分）+ 📋 每人评分依据 + 🎯 个性化行动建议`
+B 必须生成 1-3 个具体 `verification_questions`（来自 partial/unverified 的 reason，不是套话）。
+C **不得**生成软化建议（"转岗 / 培养 / 尝试 / 建议电话沟通"）。
 
-- **推荐面试**：每人必须写「候选人背景」+「沟通方向」
-- **待沟通确认**：每人必须写「优势」+「需确认问题」
-- ❌ 禁止所有人使用相同的沟通方向
+### 评分策略单一来源
+
+`resume-screener/scoring-policy.json`：
+
+```json
+{
+  "policy_version": "abc-education-v1",
+  "job_match_weight": 0.85,
+  "education_weight": 0.15,
+  "unknown_school_score": 70,
+  "importance_weights": {"must": 5, "core": 3, "preferred": 1},
+  "status_values": {"met": 1.0, "partial": 0.6, "unverified": 0.5, "not_met": 0.0},
+  "degree_bonus": {"硕士": 8, "博士": 12}
+}
+```
+
+`job_match_weight + education_weight` 必须等于 1.0；任何脚本硬编码权重都是 bug。
+
+### LLM 评估输入 schema
+
+```json
+{
+  "assessments": [
+    {
+      "requirement_id": "common_001",
+      "status": "met|partial|unverified|not_met",
+      "evidence": ["简历中的具体事实"],
+      "reason": "为什么这个 status"
+    }
+  ]
+}
+```
+
+每个 requirement 必须评估一次，不允许未知/重复/缺失。LLM 不输出 0-100 自由分、不替候选人做 A/B/C 决定。
+
+### 多方向 JD
+
+`common_requirements`（共同）+ `alternative_tracks`（每个方向独立）。候选人只匹配 `共同 + best_track`，其他方向不参与扣分。单方向 JD 自动生成 `general` track。
+
+### LLM 评分 worker 行为约束
+
+- 独立、无状态：每位候选人是全新 LLM 请求，不复用 messages / session / thread；
+- 4 个必填环境变量：`BOSS_HR_LLM_BASE_URL` / `_API_KEY` / `_MODEL` / `_TIMEOUT`；API key 不允许通过 CLI 传入；
+- 401/403 / 配置错误 / 4xx 非限流 **不重试**；429/5xx/网络/超时**有限重试**；
+- 输出必须为合法 JSON（容错剥离 ```json``` Markdown code fence）；
+- 原子写：临时文件 + `os.replace`；
+- 错误信息**不含** API key / 简历正文 / 模型响应。
+
+### 兼容性
+
+- v1 run 的 `_llm_scores.json` / `screening_results.json`（v1 schema）**只读不迁移**；
+- HTML 报告 v2 渲染器自动检测 `schema_version`：2.0 → A/B/C；其它 → v1 旧渲染；
+- greet v2 兼容：v1 run 按 `score >= threshold` 入选；v2 run 按 `decision in (A, B)` 入选；C 永排除。
+
+### 学历分档表（v2 仍使用）
+
+| 档次 | 分数 |
+|------|:----:|
+| C9 | 100 |
+| 985 | 92 |
+| 211 | 85 |
+| 双一流 | 77 |
+| 一本公办 | 71 |
+| 二本公办 | 62 |
+| 民办/独立学院 | 53 |
+
+硕士 +8、博士 +12，封顶 100。未收录学校用中性分 `unknown_school_score`（默认 70），
+输出 `education_review_required=true`。
 
 ---
 

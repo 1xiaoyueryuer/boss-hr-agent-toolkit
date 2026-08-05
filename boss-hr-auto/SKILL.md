@@ -13,17 +13,20 @@ description: |
   - 非 BOSS 直聘的其他招聘平台
 
   **行为边界**：详见 [docs/BEHAVIOR_V1.md](../docs/BEHAVIOR_V1.md)。
-  v1.1+ 只支持「一次完整的新筛选任务」；continue / batch / 多批累计均不支持。
+  v2 评分协议：见本 Skill "v2 评分协议" 章节。
+  智能体只通过统一 CLI `boss-hr` 调用；不直接调底层脚本。
 
-  **编排入口**：统一 CLI `boss-hr`。**禁止直接调用旧业务脚本**。
+  **编排入口**：统一 CLI `boss-hr`。
 type: workflow
 ---
 
-# BOSS HR 统一筛选流程（v1.1+）
+# BOSS HR 统一筛选流程（v2 评分）
 
-> 入口：`boss-hr` 统一 CLI。下文按步骤顺序调用 8 个公开命令。
+> 入口：`boss-hr` 统一 CLI。下文按步骤顺序逐个调用公开命令。
 >
-> **本 Skill 是纯文档**。智能体按步骤顺序逐个调用统一命令。
+> **v2 关键变化**：评分由 `boss-hr score` 内部独立 LLM worker 完成。**父 agent 不再**
+> 读 `input_file` / 写 `output_file` / 调用任何模型。一次 score 调一次 LLM 评一位候选人，
+> 状态在 `candidate_scored` 与 `scoring_complete` 之间循环。
 
 ## 行为边界
 
@@ -38,19 +41,23 @@ type: workflow
 - continue / batch / 多批累计；
 - 自动查找最新 run；
 - 从其他 run 补数据；
-- 自动跳过人工确认门。
+- 自动跳过人工确认门；
+- 父 agent 自行调 LLM 给候选人打分；
+- `--only-names` 把 C 类候选人加入招呼名单（v2 强制 C 永排除）；
+- 任何 OpenAI / Anthropic / Claude / GPT / Gemini / ChatGPT / Cursor /
+  MiniMax Code / Claude Code 专属代码路径。
 
-## 公开命令（v1.1.1 起 8 个：含 doctor）
+## 公开命令（v2）
 
 | 命令 | 作用 |
 |---|---|
-| `boss-hr doctor` | **环境健康检查 + 启动辅助**（首次或环境未知时先调） |
+| `boss-hr doctor` | 环境健康检查（首次或环境未知时先调） |
 | `boss-hr start` | 创建新 run，停在人工确认门 |
 | `boss-hr confirm` | 把 `confirmed` 翻 true |
 | `boss-hr fetch --count N` | 拉候选人列表 + 下载 N 份简历 |
-| `boss-hr score` | 评分协调（一次返回 1 位候选人） |
-| `boss-hr report` | 生成 HTML 报告 |
-| `boss-hr greet` | 给 ≥70 分候选人自动打招呼（需用户明确批准） |
+| `boss-hr score` | v2 评分（每调一次评一位，状态 candidate_scored / scoring_complete） |
+| `boss-hr report` | 生成 A/B/C HTML 报告 |
+| `boss-hr greet` | 给 v2 A/B 候选人打招呼（C 永远排除） |
 | `boss-hr status` | 读 `runs/<run_id>/run.json` + process 目录 |
 
 **禁止调用旧脚本**：`boss_jd.py` / `confirm_run.py` / `recommend_list.py` /
@@ -58,190 +65,114 @@ type: workflow
 `score_resumes.py` / `generate_html_report.py` / `auto_greet.py` /
 `cli_runner.py` / spec JSON。
 
-## 浏览器与登录态（v1.1.2 自动恢复）
-
-**正常流程直接 `start`**。start / fetch / greet 都自动保证 Edge + BOSS
-登录态可用，不需要先跑 `doctor`：
-
-1. start 检查 9222 端口；未监听 → 自动启动**专用** Edge
-   （`--user-data-dir=%LOCALAPPDATA%\boss-hr-edge-profile` + `--remote-debugging-port=9222`，
-   **不**污染用户日常 Edge profile）。
-2. 自动启动成功后连接 CDP，检查 BOSS 登录态。
-3. 已登录 → 继续执行 start 业务（实时解析岗位 → 创建 run）。
-4. 未登录 → 自动打开 BOSS 招聘者登录页，轮询等待（默认 20 秒）。
-5. 用户在专用 Edge 窗口内扫码登录 → 轮询命中后继续 start。
-6. 超时仍未登录 → 返回 `status=waiting_user_login`（**不是错误**），
-   `next_action=retry_same_command`，**不创建 run**。智能体**直接**告诉用户：
-
-   > 已为你打开专用 Edge，请在浏览器中扫码登录 BOSS 招聘者后台。
-   > 完成后回复"好了"，我会继续当前任务。
-
-   然后**立即停止**。如果 `data.login_page_opened=false`，智能体必须把
-   message 中的"已为你打开"改口为"请在专用 Edge 中手动打开
-   https://www.zhipin.com/web/chat/recommend 登录"，不能伪称已打开。
-
-   用户回复"好了" → 智能体**重新执行完全相同的 `boss-hr start` 命令**（不传任何新参数）。
-
-`doctor` 仍是独立诊断工具，但**不再是 start 的必经前置**。仅当：
-
-- 自动启动 Edge 失败（`EDGE_LAUNCH_FAILED` / `CDP_NOT_RUNNING` 超时）；
-- CDP 可连但 BOSS 始终判定未登录；
-- Edge 缺失或版本不匹配；
-
-这些**才**用 `doctor` 排查。普通首次使用**不需要**先 doctor。
-
-调试时可加 `--no-auto-launch`：缺 CDP 时直接返回 `CDP_NOT_RUNNING`，
-跳过自动启动 Edge。
-
-## 岗位解析规则（v1.1.1 强制）
-
-智能体**只**需提供：
-
-- 岗位名称（如 `"线控底盘制动、转向工程师"`）
-- 或 jobId 数字（如 `559622717`）
-- 或完整 encryptJobId（如 `9a7759badfd95d350nFz3d-_F1NX`）
-
-`start` 内部通过 `shared.recruiter_job_catalog.resolve_recruiter_job(query)`
-**实时**调 BOSS 后端岗位目录解析。
-
 **禁止**：
 
-- 读取 `jobs.json` 拿 encryptJobId
-- 从历史 run / `job_detail.json` 找 ID
-- 读取 `state/` 文件
-- 读取历史 HTML 报告
-- 扫描最近 run
-- 读取 `current_run.json`（已废弃）
+- 直接调用 LLM API 评分；
+- 自己写候选人 output 文件；
+- 读取 `runs/<run_id>/process/scoring/outputs/candidate_*.json`（父 agent 看不到这个）；
+- 设置 `boss-hr` 任何未公开的内部参数；
+- 任何对 7 个旧业务脚本的 subprocess 调用。
 
-### 0. 浏览器（v1.1.2）：start 自动启动 Edge
+## v2 评分协议
 
-正常流程**直接** `boss-hr start`，不需先 doctor：
+`boss-hr score` 一次最多处理一位候选人。状态机：
 
-- 9222 已开且已登录 → 立即进入 step 1 业务
-- 9222 未开 → 自动启动专用 Edge（`%LOCALAPPDATA%\boss-hr-edge-profile`，
-  `--remote-debugging-port=9222`，**不**碰日常 Edge profile）
-- 自动启动后未登录 → 打开 BOSS 登录页，轮询默认 20 秒
-- 超时未登录 → `status=waiting_user_login`（**不是错误**），
-  `next_action=retry_same_command`，**不创建 run**；
-  智能体停下，让用户在专用 Edge 中登录后重试同一条 start
+```
+candidate_scored  ←→ repeat_score（评完一位）
+       ↓
+scoring_complete → report（全部完成）
+```
 
-调试可选：`--no-auto-launch` 关闭自动启动；`--login-wait-seconds N` 调整等登录秒数。
+- 父 agent 不参与候选人评分；
+- 评分上下文**只在 CLI 内部**，不写入聊天历史；
+- 每次 `boss-hr score` 必须是**完全相同**的命令字面（`--job-name` / `--encrypt-job-id` / `--run-id`）；
+- 父 agent 收到 `candidate_scored` → 重跑完全相同 `boss-hr score`；
+- 父 agent 收到 `scoring_complete` → 调 `boss-hr report`；
+- 父 agent **不能**自己调 `boss-hr score` 然后读 `output_file` 改写评分。
 
-`boss-hr doctor` 仍是独立诊断工具，仅在自动启动失败时使用。
+## v2 评分数据流（父 agent 视角）
+
+```
+boss-hr score
+  ├─ 读 job_scorecard.json（若不存在则由 score CLI 内部调用 LLM 生成；不暴露）
+  ├─ 读 scoring/manifest.json（候选人清单）
+  ├─ 读一位候选人 inputs/candidate_<geek_id>.json（CLI 内部完成，父 agent 看不到）
+  ├─ LLM 评估（独立 worker，无状态）+ Python 确定性算分 + A/B/C 决策
+  ├─ 写 scoring/outputs/candidate_<geek_id>.json（v2 schema，原子写）
+  └─ 返回 status=candidate_scored
+
+boss-hr score（再次）
+  ├─ 全部合法 → finalize：合成 screening_results.json（v2 schema）
+  └─ 返回 status=scoring_complete
+```
+
+## 浏览器与登录态
+
+正常流程直接 `boss-hr start`，不需先 doctor。start / fetch / greet 自动启动专用 Edge
+（`%LOCALAPPDATA%\boss-hr-edge-profile` + `--remote-debugging-port=9222`），
+并在 BOSS 登录页轮询等待（默认 20s）。超时返回 `status=waiting_user_login`（**不是错误**），
+`next_action=retry_same_command`，**不创建 run**。
+
+`boss-hr doctor` 仍是诊断工具，仅在自动启动失败时排查。
 
 ## 标准流程
 
-### 1. 开始任务：`boss-hr start`
+### 1. 开始任务
 
 ```bash
-boss-hr start "<岗位名称 | jobId | encryptJobId>"
-# 可选: --job-name "<BOSS 真名>" --encrypt-job-id "<一致性校验>"
+boss-hr start "<岗位名称 | jobId | encryptJobId>" \
+  --job-name "<BOSS 真名>" --encrypt-job-id "<id>"
 ```
 
-**start 不接受 `--run-id`**（argparse 拦截，rc=2）。每次 start 必须创建新 run。
+**start 不接受 `--run-id`**。每次 start 必须创建新 run。
+期望返回 `status=waiting_user_confirmation` + `run_id`。**智能体立即停下**，告知用户
+在 BOSS 推荐牛人页面调整筛选条件。
 
-start 内部通过 `shared.recruiter_job_catalog.resolve_recruiter_job(query)`
-**实时**调 BOSS 后端岗位目录解析（不读 `jobs.json`）。
-
-**期望返回**：
-
-```json
-{"ok": true, "command": "start", "status": "waiting_user_confirmation",
- "run_id": "<新 run_id>", "encrypt_job_id": "...", "job_name": "...",
- "data": {"job_detail_file": "<path>", "confirmed": false,
-          "resolved_from": "live_boss_catalog"},
- "next_action": "confirm"}
-```
-
-**特殊错误**：
-
-- `JOB_NOT_FOUND`：BOSS 实时目录找不到 query（智能体不应去读 jobs.json）
-- `JOB_AMBIGUOUS`：返回 `data.candidates` 让用户精确指定 encryptJobId
-- `JOB_ID_MISMATCH`：用户传的 `--encrypt-job-id` 与实时解析不一致
-
-**拿到 run_id 后立即停下**。向用户说明：
-
-> 请在 BOSS 推荐牛人页面调整筛选条件（关键词、年龄、薪资、经验等），调整完成后回复"继续"。
-
-**禁止**：
-
-- ❌ 同一轮继续执行 `confirm` 或 `fetch`
-- ❌ 把 start 输出的 run_id 之外的值传给后续命令
-
-### 2. 用户回复继续：`boss-hr confirm` + `boss-hr fetch`
+### 2. 用户回复"继续"
 
 ```bash
-boss-hr confirm --job-name "<>" --encrypt-job-id "<>" --run-id "<step1 输出的 run_id>"
-boss-hr fetch   --job-name "<>" --encrypt-job-id "<>" --run-id "<>" --count N
+boss-hr confirm --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+boss-hr fetch   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>" --count N
 ```
 
-- `confirm` 翻 `confirmed=true`、写 `user_confirmed_at`；**不入** `steps_done`。
-- `fetch --count N` 先 list 再 download；返回 `candidates_fetched`。
-- `fetch` 内部**不**触发 score / report / greet。
-
-**run_id 必须来自 step 1**，禁止扫描 `runs/` 找最新、禁止读 `current_run.json`。
-
-### 3. 评分：`boss-hr score` 循环
-
-LLM 循环：
-
-1. 调 `boss-hr score ...`。
-2. 若返回 `status=waiting_llm`：**只读**返回的 `data.input_file`；
-   按 [resume-screener/SKILL.md §5](../resume-screener/SKILL.md) 评 4 维度
-   `exp / skill / proj / major`（0-100 最终分，**不评 edu**）；
-   把单个评分 object 写入返回的 `data.output_file`；
-   **再调一次完全相同的** `boss-hr score ...`。
-3. 若返回 `status=scoring_complete`：进 step 4。
-
-**单候选人约束**：每次 `score` 只处理一位候选人。LLM 不循环写多位。
-
-**评分不改**：`total` 由 5 维度 weighted（edu 25% / exp 25% / skill 25% /
-proj 15% / major 10%）算；tier ≥70 推荐 / 60-69 待定 / <60 不推荐。
-edu 由 `score_resumes` 用 `school_tier` 强制覆盖，不接受 LLM 赋值。
-
-### 4. 报告：`boss-hr report`
+### 3. 评分循环
 
 ```bash
-boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
+boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+# 返回 status=candidate_scored, data.candidate_id, data.decision, data.final_score, data.remaining
+# 智能体只需重跑完全相同的命令
+boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+# 直到 status=scoring_complete, data.scored, data.screening_results_file
 ```
 
-期望返回：
+**不要**：读取 input_file / 自己调 LLM / 写 output_file。
 
-```json
-{"ok": true, "command": "report", "status": "report_ready",
- "data": {"report_file": "<绝对路径>"}, "next_action": "greet_optional"}
-```
-
-把 `report_file` 路径告诉用户。**report 不自动调 greet**。
-
-### 5. 打招呼：`boss-hr greet`（需用户明确批准）
-
-**只有用户明确要求"打招呼"或"招呼这几个人"时**才执行：
+### 4. 报告
 
 ```bash
-boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<>" \
+boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+```
+
+期望返回 `status=report_ready` + `data.report_file`。**report 不自动调 greet**。
+
+### 5. 打招呼（用户明确要求时）
+
+```bash
+boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>" \
   [--only-names "张三,李四"] [--threshold 70] [--max 10] [--dry-run]
 ```
 
-**安全约束**：
-
-- 不得降低阈值、不得改分数、不得强制点名不推荐候选人发送；
-- score `< 70` 的候选人**不会**被打招呼（`no_candidates=true` 路径）；
-- 单 run `finished=true` 仅在 `greeted >= 1` 且 `maybe_finish` 成功时被设置
-  （`run.json.finished` ≠ `next_action="done"`）。
-
-### 6. 状态查询：`boss-hr status`
-
-```bash
-boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
-```
-
-只对**用户明确提供**的 `encrypt_job_id` + `run_id` 执行。**禁止扫描**最新 run。
+v2 行为：
+- 仅 A / B 类候选人入选；**C 永远排除**（即使 `--threshold=0`）；
+- `--only-names` 不能把 C 类加入名单；
+- v1 旧 run 的 screening_results.json 仍按 `score >= threshold` 兼容；
+- encryptGeekId 是唯一身份；姓名仅作 fallback；
+- 渐进扫描、不刷新推荐页、同名防误发、partial_success 语义保持不变。
 
 ## 铁律
 
 | # | 规则 |
-|---|---|
+|---|------|
 | 1 | 新任务必须调 `start`；start 不接受旧 run_id |
 | 2 | start 后必须停下，等用户回复"继续" |
 | 3 | 所有下游命令必须显式使用同一个 `run_id` |
@@ -249,53 +180,114 @@ boss-hr status --job-name "<>" --encrypt-job-id "<>" --run-id "<>"
 | 5 | 禁止读 `current_run.json`（已废弃） |
 | 6 | 禁止借用其他 run 的产物 |
 | 7 | 禁止创建 `spec_*.json` 模板 |
-| 8 | 禁止直接调旧业务脚本（boss_jd / confirm_run / recommend_* / score_* / generate_html_report / auto_greet） |
+| 8 | 禁止直接调旧业务脚本 |
 | 9 | 禁止调 `cli_runner` 或 `shared.cli_runner.run_python_cli` |
 | 10 | 禁止自动 greet（必须用户明确批准） |
 | 11 | 禁止 continue / batch / 多批累计 |
-| 12 | 禁止为测试而降低阈值、篡改评分 |
+| 12 | **禁止父 agent 参与候选人评分**（v2 强制） |
+| 13 | 禁止 `--only-names` 把 C 类加入招呼名单（v2 强制） |
+| 14 | 禁止为不同 agent 写 LLM adapter（项目内已实现 OpenAI-compatible 唯一 adapter） |
 
 ## 状态处理
 
-每个命令返回的 `status` 字段决定下一步动作：
+每个命令返回的 `status` 字段决定下一步：
 
 | 返回 status | 含义 | 智能体动作 |
 |---|---|---|
-| `waiting_user_confirmation` | start 完成，等用户回复"继续" | **停下**，告知用户去 BOSS 推荐牛人页面调整筛选条件 |
-| `waiting_user_login` | start 自动启动 Edge 后用户未登录超时 | **停下**，告知用户已在专用 Edge 中打开登录页，登录后重试同一条 start |
+| `waiting_user_confirmation` | start 完成，等用户回复"继续" | **停下**，告知用户去 BOSS 推荐牛人页面调整筛选 |
+| `waiting_user_login` | start 自动启动 Edge 后用户未登录超时 | **停下**，告知用户在专用 Edge 中登录后重试同一条 start |
 | `confirmed` | confirm 完成 | 进入 fetch |
 | `candidates_fetched` | fetch 完成 | 进入 score 循环 |
-| `waiting_llm` | score 需要 LLM 评一位 | 读 input_file、评、写 output_file、**再次调** `boss-hr score` |
+| `candidate_scored` | score 评完一位候选人 | 重跑完全相同的 `boss-hr score` |
 | `scoring_complete` | 评分收尾完成 | 进入 report |
 | `report_ready` | HTML 报告已生成 | 把 `report_file` 告诉用户；**不**自动 greet |
-| `greet_complete` | 本次 greet 命令结束 | 任务结束 |
+| `greet_complete` / `no_candidates` | 本次 greet 命令结束 | 任务结束 |
 | （任意 `ok=false`） | 错误 | 见下方错误处理 |
 
-**重要**：`next_action="done"` 只表示"当前 CLI 工作流无下一项自动动作"，
-**不等于** `run.json.finished=true`。只有 `maybe_finish()` 在 `greeted>=1`
-且 `orch.finish(run_id=...)` 成功时被设置 `run.json.finished=true`。
+`next_action="done"` 只表示"当前 CLI 工作流无下一项自动动作"，**不等于** `run.json.finished=true`。
+只有 `maybe_finish()` 在 `greeted>=1` 且 `orch.finish(run_id=...)` 成功时被设置
+`run.json.finished=true`。
 
 ## 错误处理
 
 统一 CLI 返回非零退出码时：
 
 1. **先**读取 `error.code`：
-   - `EDGE_NOT_FOUND` / `CDP_NOT_RUNNING` / `CDP_CONNECT_FAILED` →
-     让用户按 `remediation` 启动 Edge / 重连
+   - `EDGE_NOT_FOUND` / `CDP_NOT_RUNNING` / `CDP_CONNECT_FAILED` → 让用户按 `remediation` 启动 Edge / 重连
    - `BOSS_LOGIN_REQUIRED` → 让用户在专用 Edge 中扫码登录
    - `BOSS_PAGE_REQUIRED` → 让用户打开 BOSS 招聘者页面
-   - `JOB_NOT_FOUND` / `JOB_AMBIGUOUS` / `JOB_ID_MISMATCH` → 按
-     `data.candidates` 或 `remediation.instructions` 重新提供 query
+   - `JOB_NOT_FOUND` / `JOB_AMBIGUOUS` / `JOB_ID_MISMATCH` → 按 `data.candidates` 或 `remediation.instructions` 重新提供 query
+   - `LLM_CONFIG_ERROR` → 让用户设置 `BOSS_HR_LLM_BASE_URL` / `_API_KEY` / `_MODEL` 三个环境变量（参考 §手工 smoke 验证）
 2. 检查 `error.recoverable`：若 `true` 才有可执行恢复路径
 3. 按 `error.next_action` / `error.remediation` 引导用户
 
 **禁止**：
 
 - 读 `boss_hr` 源码
-- 直接调用旧业务脚本（`boss_jd.py` / `auto_greet.py` 等）
+- 直接调用旧业务脚本
 - 用历史 JSON（`jobs.json` / `run.json` / `job_detail.json`）绕过错误
 - 把 run 状态（`confirmed` / `finished`）手工改写
 
-常见退出码：`1`（业务层）/ `2`（argparse 缺必填）/
-`20`（未 confirm 跑 fetch）/ `23`（run 不存在）/ `24`（run 与岗位不匹配）/
-`26`（缺输入文件）/ `27`（缺输出文件）。
+常见退出码：`1`（业务层）/ `2`（argparse 缺必填）/ `20`（未 confirm 跑 fetch）/
+`23`（run 不存在）/ `24`（run 与岗位不匹配）/ `26`（缺输入文件）/ `27`（缺输出文件）/
+`99`（内部错误，含 LLM 调用失败 / 评分 schema 不合法 / 校验错误等）。
+
+## 手工 smoke 验证（用户如何手动验证 v2 评分）
+
+v2 评分需要 LLM API；用户手工验证请设置以下环境变量：
+
+```powershell
+$env:BOSS_HR_LLM_BASE_URL="https://你的-OpenAI-compatible-端点/v1"
+$env:BOSS_HR_LLM_API_KEY="你的-API-key"
+$env:BOSS_HR_LLM_MODEL="模型名"
+$env:BOSS_HR_LLM_TIMEOUT="120"
+```
+
+四个变量是必填的，**API key 不允许通过 CLI 参数传入**。
+
+然后：
+
+```powershell
+# 1. start → confirm → fetch（与 v1 一致）
+boss-hr start "<岗位名>" --job-name "<>" --encrypt-job-id "<>"
+boss-hr confirm --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+boss-hr fetch --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>" --count 5
+
+# 2. score 循环
+boss-hr score --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+# → status=candidate_scored，重复到 status=scoring_complete
+
+# 3. 检查产物
+Get-Content "<workspace>\<eid>\runs\<rid>\process\scoring\job_scorecard.json"
+Get-Content "<workspace>\<eid>\runs\<rid>\process\scoring\outputs\candidate_*.json"
+Get-Content "<workspace>\<eid>\runs\<rid>\process\_llm_scores.json"  # v2 不再写此文件
+Get-Content "<workspace>\<eid>\runs\<rid>\process\screening_results.json"
+
+# 4. report → greet
+boss-hr report --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
+boss-hr greet --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>" --dry-run
+```
+
+## 与 v1 的差异
+
+| 项 | v1 | v2 |
+|---|---|---|
+| 评分主体 | 父 agent 读 input_file + 调自己的 LLM + 写 output_file | `boss-hr score` 内部独立 worker |
+| `input_file` / `output_file` 暴露给父 agent | 是 | **否**（v2 隐藏） |
+| 评分维度 | exp/skill/proj/major 4 个 0-100 | requirement 证据映射 + Python 算分 |
+| 公式 | edu 25% + exp 25% + skill 25% + proj 15% + major 10% | `job_match_score × 0.85 + education_score × 0.15` |
+| Tier | 推荐 ≥70 / 待定 60-69 / 不推荐 <60 | A / B / C 决策（不仅看 final_score） |
+| education 角色 | 一维加权和 | 硬门槛（JD 规定时）+ 15% 软偏好 |
+| score 状态 | `waiting_llm` 循环 | `candidate_scored` 循环 |
+| collect 步骤 | `collect_llm_scores.py` | v2 不再调 |
+| LLM adapter | 由 agent 自己提供 | 项目内 OpenAI-compatible 唯一 adapter |
+| greet 资格 | score >= threshold | v2 用 `contact_recommended`（A/B）；C 永排除 |
+
+## v1 旧 run 的兼容性
+
+- v1 run 的 `screening_results.json`（v1 schema：推荐/待定/不推荐 + total）仍可读；
+- HTML 报告 v2 渲染器自动检测 `schema_version`：
+  - `2.0` → A/B/C 分组 + 评分卡摘要
+  - 其它 / 缺省 → v1 旧渲染（推荐/待定/不推荐 + 五维）
+- greet v2 兼容：v1 run 按 `score >= threshold` 入选；v2 run 按 `decision in (A, B)` 入选。
+- v1 旧 run 不会被迁移到 v2 schema（**只读不迁移**）。
