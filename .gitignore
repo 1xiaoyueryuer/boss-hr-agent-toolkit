@@ -39,6 +39,7 @@ Thumbs.db
 # Secrets / env (绝对不要提交)
 .env
 .env.local
+llm.env
 *.pem
 *.key
 secrets.*

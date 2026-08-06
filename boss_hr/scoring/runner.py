@@ -40,7 +40,7 @@ from .evaluator import (
     validate_candidate_output, write_candidate_output,
 )
 from .llm_client import (
-    LLMClientError, load_config_from_env, LLMConfig,
+    LLMClientError, load_config_from_env, load_llm_config, LLMConfig,
 )
 from .decision import determine_decision, DECISION_LABELS
 
@@ -332,20 +332,40 @@ def _build_screening_results_v2(
 # 主入口
 # ============================================================
 
+def _resolve_llm_config(
+    llm_config: Optional[LLMConfig],
+    llm_config_path,
+):
+    """生产入口：调用方注入的 llm_config 优先；否则走
+    load_llm_config（env > ~/.boss-hr/llm.env）。
+
+    返回 (config_or_none, error_dict_or_none)。
+    """
+    if llm_config is not None:
+        return llm_config, None
+    try:
+        return load_llm_config(config_path=llm_config_path), None
+    except LLMClientError as e:
+        return None, _error(
+            f"LLM 配置缺失：{e}", code="LLM_CONFIG_ERROR",
+        )
+
+
 def run_score_v2(
     *,
     job_name: str,
     encrypt_job_id: str,
     run_id: str,
     llm_config: Optional[LLMConfig] = None,
+    llm_config_path=None,
     sleep_fn=None,
     http_post=None,
     write_fn=None,
 ) -> Dict[str, Any]:
     """boss-hr score v2 主入口。
 
-    llm_config / sleep_fn / http_post / write_fn 由 application 层注入；
-    测试中可 monkeypatch 全部。
+    llm_config / llm_config_path / sleep_fn / http_post / write_fn 由
+    application 层注入；测试中可 monkeypatch 全部。
     """
     if not encrypt_job_id:
         return _blocked("缺少 encrypt_job_id", run_id=run_id)
@@ -442,20 +462,14 @@ def run_score_v2(
     if not scorecard_valid:
         # 真正需要调 LLM：先加载 config
         if llm_config is None:
-            try:
-                llm_config = load_config_from_env()
-            except LLMClientError as e:
-                return _error(
-                    f"LLM 配置缺失：{e}", run_id=run_id, code="LLM_CONFIG_ERROR",
-                )
+            llm_config, err = _resolve_llm_config(llm_config, llm_config_path)
+            if err is not None:
+                return err
 
     # 预加载 LLM config（即使 scorecard 命中，_score_one 仍可能需要）
     if llm_config is None:
-        try:
-            llm_config = load_config_from_env()
-        except LLMClientError:
-            # finalize 路径不需要 LLM；让 _score_one 自行报错
-            pass
+        llm_config, _err = _resolve_llm_config(llm_config, llm_config_path)
+        # finalize 路径不需要 LLM；让 _score_one 自行报错
 
     # 测试 hook（**仅测试模式**）：
     #   BOSS_HR_LLM_TEST_HOOK 设值时，必须在代码内不可由环境变量扩展的
@@ -613,12 +627,9 @@ def run_score_v2(
     # 只有真要调 LLM 才需要 config（如果 output 已存在并合法但被前面已判定为 missing,
     # 这里需要重评 → 调 LLM）
     if llm_config is None:
-        try:
-            llm_config = load_config_from_env()
-        except LLMClientError as e:
-            return _error(
-                f"LLM 配置缺失：{e}", run_id=run_id, code="LLM_CONFIG_ERROR",
-            )
+        llm_config, err = _resolve_llm_config(llm_config, llm_config_path)
+        if err is not None:
+            return err
     http_post, _hook_loaded = _resolve_test_hook(http_post)
     return _score_one(
         next_cand=next_cand,

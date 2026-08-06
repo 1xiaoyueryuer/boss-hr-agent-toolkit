@@ -102,14 +102,28 @@ def _install_mock_outputs(scoring_dir: str, manifest: Dict[str, Any],
 
 
 def _run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    import tempfile as _tempfile
+    _mock_env = _tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False, encoding="utf-8",
+        prefix="llm_mock_",
+    )
+    _mock_env.write(
+        "BOSS_HR_LLM_BASE_URL=http://mock-llm.test/v1\n"
+        "BOSS_HR_LLM_API_KEY=mock-key\n"
+        "BOSS_HR_LLM_MODEL=mock-model\n"
+        "BOSS_HR_LLM_TIMEOUT=60\n"
+    )
+    _mock_env.close()
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
            "PYTHONPATH": str(_TOOLKIT_ROOT),
            "BOSS_HR_LLM_BASE_URL": "http://mock-llm.test/v1",
            "BOSS_HR_LLM_API_KEY": "mock-key",
            "BOSS_HR_LLM_MODEL": "mock-model",
+           "BOSS_HR_LLM_TIMEOUT": "60",
            "BOSS_HR_LLM_TEST_HOOK": "tests.cli._mock_llm_hook",
            "BOSS_HR_LLM_TEST_REQ_IDS": "common_001,braking_001,steering_001",
            "BOSS_HR_LLM_TEST_SCENARIO": "eval",
+           "BOSS_HR_LLM_CONFIG_PATH": _mock_env.name,
            }
     if env_extra:
         env.update(env_extra)

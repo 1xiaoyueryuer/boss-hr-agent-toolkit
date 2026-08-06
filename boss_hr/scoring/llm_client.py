@@ -107,6 +107,43 @@ ENV_MAX_RETRIES = "BOSS_HR_LLM_MAX_RETRIES"
 
 
 # ============================================================
+# 持久化用户配置文件（~/.boss-hr/llm.env）
+#
+# 设计原则：
+#   - 任何非法字段 / 重复字段 / malformed 行 / 非法引号 → 整份文件
+#     加载失败，绝不部分生效。
+#   - 文件路径在调用时通过 resolve_default_config_path() 解析，不在
+#     import 时缓存用户 home。
+#   - 解析纯 stdlib：不执行 shell、不做变量展开、不回显 value。
+# ============================================================
+
+# 仅这 5 个字段允许出现在持久配置文件中。其它一律整体拒绝。
+ALLOWED_FILE_KEYS = frozenset({
+    ENV_BASE_URL,
+    ENV_API_KEY,
+    ENV_MODEL,
+    ENV_TIMEOUT,
+    ENV_MAX_RETRIES,
+})
+
+# API key 占位符：仍保留视为"未配置"。
+KEY_PLACEHOLDERS = frozenset({
+    "",
+    "请填写",
+    "<YOUR_API_KEY>",
+    "<你的 API key>",
+})
+
+# 说明性常量；生产加载必须经 resolve_default_config_path() 在调用时解析。
+DEFAULT_CONFIG_PATH = Path.home() / ".boss-hr" / "llm.env"
+
+
+def resolve_default_config_path() -> Path:
+    """调用时解析用户配置路径，避免 import 时缓存。"""
+    return Path.home() / ".boss-hr" / "llm.env"
+
+
+# ============================================================
 # 配置 + 客户端
 # ============================================================
 
@@ -177,6 +214,233 @@ def load_config_from_env(env: Optional[Dict[str, str]] = None) -> LLMConfig:
         max_retries = 2
     if max_retries < 0:
         max_retries = 0
+    return LLMConfig(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
+
+
+# ============================================================
+# 持久化配置文件解析（纯 stdlib）
+# ============================================================
+
+# 单字符 = 的 split maxsplit，避免 value 含 '=' 被吞
+_MAX_KEY_LEN = 256
+
+
+def _strip_paired_quotes(value: str) -> str:
+    """剥去一层配对的单/双引号；只剥一层；不匹配时原样返回。"""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def parse_llm_env_file(text: str, *, source: str) -> Dict[str, str]:
+    """解析 .env 风格文本。
+
+    规则：
+      - UTF-8 BOM 兼容（调用方负责解码时去掉）。
+      - 空行 / 仅空白行 / `#` 开头注释行忽略。
+      - 按第一个 '=' split key/value；两侧 strip 空白。
+      - value 可剥去一层配对的单/双引号。
+      - 重复 key → 整份失败。
+      - 任何非白名单字段 → 整份失败。
+      - malformed 行（缺 '=' / key 为空 / value 末尾含未闭合引号）
+        → 整份失败。
+      - 不执行 shell / 不做 ${VAR} / %VAR% / 命令替换。
+      - 错误只含路径、键名、行号、原因，不含 value。
+    """
+    if not isinstance(text, str):
+        raise LLMConfigError(f"配置文件 {source} 内容不是字符串")
+
+    out: Dict[str, str] = {}
+    for lineno0, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise LLMConfigError(
+                f"配置文件 {source} 第 {lineno0} 行 malformed：缺少 '='"
+            )
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise LLMConfigError(
+                f"配置文件 {source} 第 {lineno0} 行 malformed：key 为空"
+            )
+        if len(key) > _MAX_KEY_LEN:
+            raise LLMConfigError(
+                f"配置文件 {source} 第 {lineno0} 行 malformed：key 过长"
+            )
+        # 引号完整性校验：若以引号开头必须以相同引号闭合
+        if value and value[0] in ("'", '"'):
+            if len(value) < 2 or value[-1] != value[0]:
+                raise LLMConfigError(
+                    f"配置文件 {source} 第 {lineno0} 行 malformed：引号未闭合"
+                )
+        value = _strip_paired_quotes(value)
+        if key not in ALLOWED_FILE_KEYS:
+            raise LLMConfigError(
+                f"配置文件 {source} 第 {lineno0} 行：字段 '{key}' 不在白名单"
+            )
+        if key in out:
+            raise LLMConfigError(
+                f"配置文件 {source} 第 {lineno0} 行：字段 '{key}' 重复"
+            )
+        out[key] = value
+    return out
+
+
+def load_llm_env_file(path: os.PathLike | str) -> Dict[str, str]:
+    """从磁盘读取持久配置文件。
+
+    不存在 → 返回 {}。
+    存在但任一字段/行非法 → 整份失败（LLMConfigError）。
+    """
+    p = Path(path)
+    if not p.exists():
+        return {}
+    if not p.is_file():
+        raise LLMConfigError(f"配置路径 {p} 不是文件")
+    try:
+        raw_bytes = p.read_bytes()
+    except OSError as e:
+        raise LLMConfigError(f"读取持久配置 {p} 失败：{e.strerror or e}") from None
+    # 兼容 UTF-8 BOM
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        raw_bytes = raw_bytes[3:]
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise LLMConfigError(
+            f"持久配置 {p} 不是合法 UTF-8：第 {e.start} 字节起解码失败"
+        ) from None
+    return parse_llm_env_file(text, source=str(p))
+
+
+def _coerce_timeout(value: str, *, source: str) -> float:
+    """TIMEOUT 严格校验：必须为正有限浮点。失败抛错（不回退默认）。"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise LLMConfigError(
+            f"{source} 中 BOSS_HR_LLM_TIMEOUT 不是合法数字"
+        ) from None
+    import math as _math
+    if not _math.isfinite(f) or f <= 0:
+        raise LLMConfigError(
+            f"{source} 中 BOSS_HR_LLM_TIMEOUT 必须是正有限数"
+        )
+    return float(f)
+
+
+def _coerce_max_retries(value: str, *, source: str) -> int:
+    """MAX_RETRIES 严格校验：必须为非负整数。失败抛错（不回退默认）。"""
+    # 拒绝像 '1.5' / 'abc' / ' 1 ' 这类容易踩坑的输入
+    s = value.strip()
+    try:
+        n = int(s)
+    except (TypeError, ValueError):
+        raise LLMConfigError(
+            f"{source} 中 BOSS_HR_LLM_MAX_RETRIES 不是合法整数"
+        ) from None
+    if n < 0:
+        raise LLMConfigError(
+            f"{source} 中 BOSS_HR_LLM_MAX_RETRIES 不能为负"
+        )
+    return n
+
+
+def load_llm_config(
+    *,
+    config_path: Optional[os.PathLike | str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> LLMConfig:
+    """生产入口：env > 持久配置文件 > dataclass 默认。
+
+    行为：
+      - 严格白名单：仅 ENV_BASE_URL/API_KEY/MODEL/TIMEOUT/MAX_RETRIES；
+        文件中出现任何非白名单字段 → 整份失败。
+      - env 与文件冲突时，env 优先；空字符串 env 视为未设置。
+      - 必填字段缺失 → LLMConfigError（不读 value，只报告键名+来源）。
+      - TIMEOUT 必填且必须正有限；MAX_RETRIES 可选且必须非负整数；
+        非法值一律报错，绝不回退默认。
+      - API key 落入 KEY_PLACEHOLDERS → LLMConfigError("API key 尚未配置")，
+        不回显原值。
+      - 不写回 os.environ。
+    """
+    src_env = env if env is not None else dict(os.environ)
+
+    if config_path is None:
+        path = resolve_default_config_path()
+        path_label = str(path)
+    else:
+        path = Path(config_path)
+        path_label = str(path)
+
+    file_values: Dict[str, str] = {}
+    if str(path) != "":
+        # 调用方显式传 path（即使是 None → 走默认）即尝试读取；不存在 → {}
+        try:
+            file_values = load_llm_env_file(path)
+        except LLMConfigError:
+            # load_llm_env_file 自身已经包含 source 路径，直接透传
+            raise
+
+    # 先逐字段收集"原始值"，区分"未提供"与"占位/空"。
+    # "未提供" 走必填缺失错误；"占位/空" 走专属占位符错误。
+    raw: Dict[str, Optional[str]] = {}
+    for field in (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL, ENV_TIMEOUT):
+        env_raw = src_env.get(field)
+        if env_raw is not None and env_raw != "":
+            raw[field] = env_raw
+        elif field in file_values:
+            raw[field] = file_values[field]
+        else:
+            raw[field] = None
+
+    # API key 占位符优先：空/请填写/<...> 一律视为"未配置"，但要给清晰错误
+    if raw[ENV_API_KEY] in KEY_PLACEHOLDERS:
+        src_label = "环境变量" if src_env.get(ENV_API_KEY) else path_label
+        raise LLMConfigError(
+            f"API key 尚未配置（来源：{src_label}）"
+        )
+
+    missing = [f for f in (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL, ENV_TIMEOUT)
+               if not raw[f]]
+    if missing:
+        env_set = {k for k in (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL, ENV_TIMEOUT)
+                   if src_env.get(k)}
+        env_part = f"已通过环境变量设置：{sorted(env_set)}；" if env_set else ""
+        raise LLMConfigError(
+            "LLM 配置不完整。"
+            f"{env_part}持久配置 {path_label} 中缺少必填字段：{missing}。"
+            "可设置对应 BOSS_HR_LLM_* 环境变量临时覆盖。"
+        )
+
+    base_url = str(raw[ENV_BASE_URL]).strip()
+    api_key = str(raw[ENV_API_KEY]).strip()
+    model = str(raw[ENV_MODEL]).strip()
+    if not base_url or not api_key or not model:
+        # 防御：理论上 missing 已经拦下，这里兜底
+        raise LLMConfigError("LLM 配置字段在去除空白后为空")
+
+    timeout = _coerce_timeout(str(raw[ENV_TIMEOUT]), source=path_label)
+
+    # MAX_RETRIES：可选；缺失走 dataclass 默认 2
+    if ENV_MAX_RETRIES in src_env and src_env[ENV_MAX_RETRIES] != "":
+        max_retries = _coerce_max_retries(
+            str(src_env[ENV_MAX_RETRIES]), source="环境变量")
+    elif ENV_MAX_RETRIES in file_values:
+        max_retries = _coerce_max_retries(
+            str(file_values[ENV_MAX_RETRIES]), source=path_label)
+    else:
+        max_retries = 2
+
     return LLMConfig(
         base_url=base_url,
         api_key=api_key,
@@ -430,6 +694,12 @@ __all__ = [
     "LLMJSONParseError",
     "LLMConfig",
     "load_config_from_env",
+    "load_llm_config",
+    "load_llm_env_file",
+    "parse_llm_env_file",
+    "resolve_default_config_path",
+    "DEFAULT_CONFIG_PATH",
+    "ALLOWED_FILE_KEYS",
     "ENV_BASE_URL",
     "ENV_API_KEY",
     "ENV_MODEL",

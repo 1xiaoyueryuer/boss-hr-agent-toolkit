@@ -58,6 +58,15 @@ A/B/C 决策（不只看 final_score）：
 
 LLM 只做"requirement ↔ 简历证据"映射；不做：
 - 输出 0-100 自由分（v1 旧行为）
+
+## LLM 持久化配置
+
+`boss-hr score` 的 4 个必填 LLM 字段（`BASE_URL` / `API_KEY` / `MODEL` /
+`TIMEOUT`，可选 `MAX_RETRIES`）可写入 `~/.boss-hr/llm.env`，运行时自动
+加载；环境变量逐字段覆盖文件。仓库只提交示例文件
+[`config/llm.env.example`](../../config/llm.env.example)。test hook 仍只
+能走代码内静态白名单（`tests.cli._mock_llm_hook`），无法通过持久配置
+注入。错误信息永远不回显 API key。
 - 替候选人做 A/B/C 决定
 - 用公司名 / 学校名替代能力证据
 - 复制粘贴相同 reason

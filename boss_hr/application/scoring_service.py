@@ -154,10 +154,16 @@ def run_score(*, job_name: str, encrypt_job_id: Optional[str],
         )
 
     from boss_hr.scoring.runner import run_score_v2
+    # CLI 入口：把可选的持久配置路径 env 透传给 runner（仅用于子进程测试
+    # 注入合法配置；生产环境走默认 ~/.boss-hr/llm.env）。读取过程不写回
+    # os.environ，绝不暴露值。
+    import os as _os
+    _llm_cfg_path = _os.environ.get("BOSS_HR_LLM_CONFIG_PATH") or None
     result = run_score_v2(
         job_name=job_name,
         encrypt_job_id=eid,
         run_id=run_id,
+        llm_config_path=_llm_cfg_path,
     )
     return _wrap_v2_result(result)
 

@@ -217,7 +217,7 @@ v2 行为：
    - `BOSS_LOGIN_REQUIRED` → 让用户在专用 Edge 中扫码登录
    - `BOSS_PAGE_REQUIRED` → 让用户打开 BOSS 招聘者页面
    - `JOB_NOT_FOUND` / `JOB_AMBIGUOUS` / `JOB_ID_MISMATCH` → 按 `data.candidates` 或 `remediation.instructions` 重新提供 query
-   - `LLM_CONFIG_ERROR` → 让用户设置 `BOSS_HR_LLM_BASE_URL` / `_API_KEY` / `_MODEL` 三个环境变量（参考 §手工 smoke 验证）
+   - `LLM_CONFIG_ERROR` → 提示用户检查持久配置 `~/.boss-hr/llm.env` 是否齐全（4 必填 + 1 可选），或用 `BOSS_HR_LLM_*` 环境变量临时覆盖
 2. 检查 `error.recoverable`：若 `true` 才有可执行恢复路径
 3. 按 `error.next_action` / `error.remediation` 引导用户
 
@@ -234,7 +234,45 @@ v2 行为：
 
 ## 手工 smoke 验证（用户如何手动验证 v2 评分）
 
-v2 评分需要 LLM API；用户手工验证请设置以下环境变量：
+### 推荐：使用持久化用户配置文件
+
+v2 评分需要的 4 个 LLM 字段可写入 `~/.boss-hr/llm.env`，`boss-hr score`
+会自动加载；环境变量仍可逐字段覆盖文件。
+
+```powershell
+# 首次：建目录 → 复制示例 → 用记事本填写 4 个必填 + 1 个可选
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.boss-hr"
+Copy-Item ".\config\llm.env.example" "$env:USERPROFILE\.boss-hr\llm.env"
+notepad "$env:USERPROFILE\.boss-hr\llm.env"
+```
+
+字段说明（详见示例文件顶部注释）：
+
+| 字段 | 必填 | 示例 / 推荐 |
+|---|---|---|
+| `BOSS_HR_LLM_BASE_URL` | 是 | `https://api.minimaxi.com/v1` / `https://api.minimax.io/v1` |
+| `BOSS_HR_LLM_API_KEY` | 是 | 服务端分发的真实 key（**永不提交**） |
+| `BOSS_HR_LLM_MODEL` | 是 | `MiniMax-M3` |
+| `BOSS_HR_LLM_TIMEOUT` | 是 | 推荐 `120`，按端点响应速度调整 |
+| `BOSS_HR_LLM_MAX_RETRIES` | 否 | 缺失默认 `2` |
+
+安全要点：
+
+- 真实配置位于项目外，**不会**进入 Git 或 release 压缩包；
+- 每名用户使用自己的 `~/.boss-hr/llm.env`，互不影响；
+- `BOSS_HR_LLM_TEST_HOOK` / `BOSS_HR_LLM_TEST_HOOK_ALLOWLIST` /
+  `BOSS_HR_OUTPUT_DIR` 等字段一律被持久配置拒绝，无法借此绕过 test hook
+  静态白名单；
+- 错误信息和日志**永不**展示 API key；
+- 临时覆盖仍可走环境变量，例如
+  `$env:BOSS_HR_LLM_MAX_RETRIES="1"` 仅覆盖重试次数。
+
+### 仅环境变量（旧习惯，向后兼容）
+
+> 不推荐作为正常流程；正常流程见上方"使用持久化用户配置文件"。
+> 仅在不方便创建 `~/.boss-hr/llm.env` 的环境（如 CI 临时 runner）下使用。
+
+如必须只设环境变量：
 
 ```powershell
 $env:BOSS_HR_LLM_BASE_URL="https://你的-OpenAI-compatible-端点/v1"
@@ -244,6 +282,8 @@ $env:BOSS_HR_LLM_TIMEOUT="120"
 ```
 
 四个变量是必填的，**API key 不允许通过 CLI 参数传入**。
+
+### 跑流程
 
 然后：
 

@@ -336,11 +336,33 @@ C **不得**生成软化建议（"转岗 / 培养 / 尝试 / 建议电话沟通"
 ### LLM 评分 worker 行为约束
 
 - 独立、无状态：每位候选人是全新 LLM 请求，不复用 messages / session / thread；
-- 4 个必填环境变量：`BOSS_HR_LLM_BASE_URL` / `_API_KEY` / `_MODEL` / `_TIMEOUT`；API key 不允许通过 CLI 传入；
+- 4 个必填配置字段：`BOSS_HR_LLM_BASE_URL` / `_API_KEY` / `_MODEL` / `_TIMEOUT`；API key 不允许通过 CLI 传入；
+  - **正常流程**：把字段写入 `~/.boss-hr/llm.env`（见下一节），`boss-hr score` 自动加载，**不必**每次重设 PowerShell 环境变量；
+  - 环境变量仅用于临时逐字段覆盖；
 - 401/403 / 配置错误 / 4xx 非限流 **不重试**；429/5xx/网络/超时**有限重试**；
 - 输出必须为合法 JSON（容错剥离 ```json``` Markdown code fence）；
 - 原子写：临时文件 + `os.replace`；
 - 错误信息**不含** API key / 简历正文 / 模型响应。
+
+### 持久化 LLM 配置（推荐 / 正常流程）
+
+把 4 个必填 + 1 个可选字段写入 `~/.boss-hr/llm.env`
+（Windows: `C:\Users\<用户名>\.boss-hr\llm.env`）。仓库只提交示例
+`config/llm.env.example`，用户复制并填写后 `boss-hr score` 启动时自动加载。
+环境变量仅作为临时逐字段覆盖；空字符串 env 视为未设置；加载过程
+绝不写回 `os.environ`。
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.boss-hr"
+Copy-Item ".\config\llm.env.example" "$env:USERPROFILE\.boss-hr\llm.env"
+notepad "$env:USERPROFILE\.boss-hr\llm.env"
+```
+
+字段：5 个白名单字段（`BASE_URL` / `API_KEY` / `MODEL` / `TIMEOUT` /
+`MAX_RETRIES`），其它任何键（含 `BOSS_HR_LLM_TEST_HOOK` /
+`BOSS_HR_LLM_TEST_HOOK_ALLOWLIST` / `BOSS_HR_OUTPUT_DIR` / 模块路径）一律
+让整份加载失败。test hook 仍只能走代码内静态白名单。错误信息永远不回显
+API key。详见 `config/llm.env.example` 顶部注释。
 
 ### 兼容性
 
