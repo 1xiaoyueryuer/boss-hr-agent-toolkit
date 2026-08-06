@@ -41,6 +41,22 @@ def _resolve_encrypt_job_id(cli_value: Optional[str]) -> Optional[str]:
     return os.environ.get("BOSS_HR_ENCRYPT_JOB_ID")
 
 
+# download 超时策略：
+# - 节流时间长，固定 1800 仅为下限
+# - 随候选人数量 count 线性放大：300 + count * 60
+_DOWNLOAD_TIMEOUT_MIN_SECONDS = 1800
+_DOWNLOAD_TIMEOUT_BASE_SECONDS = 300
+_DOWNLOAD_TIMEOUT_PER_CANDIDATE_SECONDS = 60
+
+
+def _calculate_download_timeout(count: int) -> int:
+    return max(
+        _DOWNLOAD_TIMEOUT_MIN_SECONDS,
+        _DOWNLOAD_TIMEOUT_BASE_SECONDS
+        + count * _DOWNLOAD_TIMEOUT_PER_CANDIDATE_SECONDS,
+    )
+
+
 def _infer_run_paths(job_name: str, eid: str, run_id: str) -> dict:
     """从 JobOutputManager 算 list / download 产物路径。"""
     from shared.output_manager import JobOutputManager
@@ -200,7 +216,7 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             "--run-id", run_id,
             "--max", str(count),
         ],
-        timeout=1800,  # download 节流长
+        timeout=_calculate_download_timeout(count),  # download 节流长，按 count 动态放大
     )
 
     if dl_result.returncode != 0:

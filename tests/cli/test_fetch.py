@@ -409,8 +409,8 @@ def test_fetch_count_maps_to_max_for_both(tmp_path, monkeypatch):
         encoding="utf-8")
 
     mock_calls: list = []
-    def _fake(tool, args, **kwargs):
-        mock_calls.append({"tool": tool, "args": list(args)})
+    def _fake(tool, args, *, timeout=60, **kwargs):
+        mock_calls.append({"tool": tool, "args": list(args), "timeout": timeout})
         if tool == "recommend_list":
             (run_dir / "process" / "recommend_geek_ids.json").write_text(
                 json.dumps([{"encryptGeekId": "g1"}], ensure_ascii=False),
@@ -428,6 +428,12 @@ def test_fetch_count_maps_to_max_for_both(tmp_path, monkeypatch):
     assert list_args[list_args.index("--max") + 1] == "7"
     assert "--max" in dl_args
     assert dl_args[dl_args.index("--max") + 1] == "7"
+
+    # list timeout 固定 600；download timeout 按 count 动态放大
+    list_call = [c for c in mock_calls if c["tool"] == "recommend_list"][0]
+    dl_call = [c for c in mock_calls if c["tool"] == "recommend_download"][0]
+    assert list_call["timeout"] == 600
+    assert dl_call["timeout"] == max(1800, 300 + 7 * 60)
 
 
 # ============================================================
@@ -744,3 +750,58 @@ def test_fetch_run_json_and_state_side_effects(fetch_mocks):
     assert after.get("steps_done") == before.get("steps_done")
     # 验证 download 调过但没写 run.json（mock fake 不调 mark_done）
     assert "download" not in after.get("steps_done", [])
+
+
+# ============================================================
+# 25. download timeout 纯函数：6 个边界值
+# ============================================================
+
+@pytest.mark.parametrize("count,expected", [
+    (1, 1800),
+    (10, 1800),
+    (20, 1800),
+    (40, 2700),
+    (60, 3900),
+    (100, 6300),
+])
+def test_calculate_download_timeout_table(count, expected):
+    """download timeout = max(1800, 300 + count * 60).
+
+    小 count 时仍受 1800 下限钳制；count 增大后随每名候选人线性放大。
+    """
+    from boss_hr.application.fetch_service import _calculate_download_timeout
+    assert _calculate_download_timeout(count) == expected
+
+
+# ============================================================
+# 26. count=40 集成级 mock：list timeout=600 + download timeout=2700 + --max=40
+# ============================================================
+
+def test_fetch_dynamic_download_timeout_count_40(fetch_mocks):
+    """count=40 时复用 fetch_mocks，验证两个 timeout 与 --max。
+
+    list timeout 固定 600；download timeout 增长到 2700（= 300 + 40*60）。
+    """
+    _tmp_path, eid, job, target, _other, mock_calls = fetch_mocks
+
+    proc = _run_cli_inproc(
+        job_name=job,
+        encrypt_job_id=eid,
+        run_id=target,
+        count=40,
+    )
+
+    assert proc.returncode == 0
+    assert [c["tool"] for c in mock_calls] == [
+        "recommend_list",
+        "recommend_download",
+    ]
+
+    list_call, download_call = mock_calls
+    assert list_call["timeout"] == 600
+    assert download_call["timeout"] == 2700
+
+    list_max = list_call["args"].index("--max")
+    download_max = download_call["args"].index("--max")
+    assert list_call["args"][list_max + 1] == "40"
+    assert download_call["args"][download_max + 1] == "40"
