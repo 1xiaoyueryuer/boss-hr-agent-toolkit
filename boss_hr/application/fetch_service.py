@@ -126,7 +126,7 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
 
     流程：
       1) 预校验（run/confirmed/count）
-      2) 调 recommend_list.py --max N
+      2) 调 recommend_list.py --max N*2（列表过量拉取，弥补 BOSS 过滤/已沟通剔除）
       3) list 失败 → 透传 rc（list 阶段失败）
       4) list 成功 → 读 recommend_geek_ids.json 算 listed_count
       5) 调 recommend_download.py --max N
@@ -179,14 +179,14 @@ def fetch_candidates(*, job_name: str, encrypt_job_id: Optional[str],
             remediation=ready.remediation,
         )
 
-    # Step 1: 调 recommend_list
+    # Step 1: 调 recommend_list（按 N*2 过量拉取，弥补 BOSS 侧已沟通/不可见剔除）
     list_result = legacy_runner.run_legacy_cli(
         "recommend_list",
         [
             "--job-name", job_name,
             "--encrypt-job-id", eid,
             "--run-id", run_id,
-            "--max", str(count),
+            "--max", str(count * 2),
         ],
         timeout=600,
     )
