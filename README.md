@@ -94,10 +94,15 @@ boss-hr greet   --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 boss-hr status  --job-name "<>" --encrypt-job-id "<>" --run-id "<rid>"
 ```
 
-> ⚠️ **当前限制（GitHub 首版）**：
-> - 不支持 `continue` / `batch` / 多批累计
-> - 真实 `greet` 成功点击（≥70 分候选人实际点击发送）尚未完成受控验证
+> ⚠️ **当前已知限制（v1.2.0）**：
+> - 真实 BOSS `greet` 成功点击（≥1 名候选人在 BOSS 端确认收到招呼）尚未在 v1.2.0 发布周期内完成受控验证；评分 v2 已通过真实 LLM 隔离 smoke，但浏览器侧仍依赖 mock 与单元测试
+> - 真实 BOSS `fetch`（推荐牛人列表与简历下载）同样未在 v1.2.0 发布周期内做受控端到端验证；`fetch` 子进程动态 timeout 仍依赖 mock 与单元测试
+> - 独立 PyPI wheel 脱离源码仓库运行不在本发布周期承诺范围；请在完整仓库目录运行 `pip install -e .` 或 `install-windows.bat`，`fetch` / `report` / `greet` 等运行时仍依赖根目录脚本
+> - LLM evidence mapping 在不同模型/小语种简历上仍可能存在小范围语义波动；离线测试仅能验证 Python 算分与提示词契约，不能直接证明 LLM 行为
 > - 仅在 Windows 上完整验证过；macOS / Linux 需自测
+> - 本仓库**不会**在无用户明确批准时自动执行 `boss-hr greet`；`greet` 是真实写操作，必须由人或父 Agent 显式触发
+>
+> 完整 v1.2.0 变更与限制见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
 

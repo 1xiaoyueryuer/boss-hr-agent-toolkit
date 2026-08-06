@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.2.0 — 评分 v2 子包 + 持久化 LLM 配置 + 动态下载超时（2026-08-06）
+
+首个整合"评分 v2"独立子包的稳定版本。业务流程兼容 v1，旧 screening / report / greet 数据只读兼容；本轮次不修改任何 v1 旧 run 的兼容性分支。
+
+### 新增
+
+- 独立、无状态、OpenAI-compatible 的 LLM 评分 worker：每次 `boss-hr score` 评一位候选人，每位候选人是全新的 `messages` 请求，候选人之间不共享聊天上下文。
+- JD scorecard 生成、hash 校验与复用：`source_jd_hash` + `policy_hash` 一致时直接复用 scorecard，不重复调用 LLM。
+- evidence mapping 与 Python 确定性算分：LLM 只做 requirement ↔ 简历证据映射，分数与 best_track 由 Python 端用 status_value × importance_weight 算分。
+- A/B/C 决策及理由：必须给出 `decision_label` 与 `decision_reasons`；C 不得生成验证问题或软化建议。
+- `~/.boss-hr/llm.env` 持久化 LLM 配置：标准库解析器（无 `dotenv` 依赖），仅接受 5 个白名单字段，整份失败，绝不部分生效；环境变量仍可逐字段覆盖文件。
+- HTML v2 A/B/C 报告：自动按 `schema_version=2.0` 切换渲染器，按决策分组展示分数、亮点、顾虑、判定理由、面试确认问题。
+- greet v2 资格：仅 `decision in (A, B) AND contact_recommended=true` 入选；C 永远排除；`--threshold` 不参与资格判断；`--only-names` 严格与本 run `screening_results.json` 取交集。
+- 下载 subprocess 动态 timeout：list 子进程保持 600 秒；download 子进程按 `max(1800, 300 + count*60)` 线性放大，应对 BOSS 节流。
+
+### 改进
+
+- evaluator 提示词校准：明确禁止添加 JD 未写明的面试级证明标准（如复杂 SQL 优化、Nginx / CI/CD / 监控细节、生产规模量化、职位/职责字段等）；"仅会 / 不掌握"等简历自述被视为有效反证。
+- 学历作为 15% 软偏好，但不能挽救岗位硬性能力不匹配（`must=not_met` 永远判 C，即使清华 / 北大硕士也不例外）。
+- v2 `--only-names`、`--threshold`、C 排除边界由 `boss-hr-greet` 强制实施，与 v1 pool fallback 分支隔离。
+- LLM 重试、错误脱敏、静态测试 hook 白名单：`401/403` / 4xx 非限流 / 配置错误不重试；异常信息不暴露 API key / Authorization；`BOSS_HR_LLM_TEST_HOOK` 仅允许仓库内 `tests.cli._mock_llm_hook`。
+- v1 旧 screening / report / greet 数据只读兼容，CLI 外部签名不变。
+
+### 验证
+
+- 593 项自动测试通过：`tests/test_llm_client.py`、`tests/test_evaluator_status_rules.py`、`tests/test_scoring_*`、`tests/cli/test_score_*`、`tests/cli/test_fetch.py`、`tests/test_greet_v2.py`、`tests/test_html_report_v2.py` 等。
+- `python -m compileall` 与 `git diff --check` 均通过。
+- 真实 MiniMax 隔离 smoke：在 OS 临时目录用合成 Python 后端 JD + A/B/C 三名虚构候选人，验证新提示词实际产出 A / B / C 三类决策、scorecard 复用、finalize、HTML v2 报告、第二次 score 不触发新 LLM 调用的幂等性。
+
+### 已知限制
+
+- 本发布周期没有执行真实 BOSS fetch 与真实 greet 点击；评分 v2 已通过真实 MiniMax smoke 验证，浏览器/下载/招呼仍依赖下游 mock 与单元测试。
+- 当前不承诺独立 PyPI wheel 脱离源码仓库运行；用户应在完整仓库目录内运行 `pip install -e .` 或 `install-windows.bat`，`fetch` / `report` / `greet` 等运行时仍依赖根目录脚本。
+- LLM evidence mapping 仍可能存在小范围语义波动（如"仅会基础"是否判 partial 还是 unverified 取决于具体模型）。
+- 旧 v1 数据不自动迁移至 v2，只读兼容；CLI 命令外部签名保持稳定。
+
 ## v1.1.3 — greet 定位算法收口 + dry-run 严格化（2026-08-05）
 
 修复 v1.1.2 真实交互式 smoke 暴露的 greet not_found bug，并强化
