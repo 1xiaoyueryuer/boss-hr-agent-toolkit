@@ -215,10 +215,9 @@ def test_doctor_launch_edge_uses_dedicated_profile(monkeypatch):
     profile_dir = [a.split("=", 1)[1] for a in cmd if a.startswith("--user-data-dir=")][0]
     # profile 目录名固定为 boss-hr-edge-profile（不嵌用户名变体）
     assert profile_dir.endswith("boss-hr-edge-profile"), profile_dir
-    # 不写到用户桌面 / 文档等敏感位置
-    low = profile_dir.lower()
-    assert "desktop" not in low
-    assert "documents" not in low
+    # Respect the configured local app-data root, including an isolated test
+    # workspace whose ancestor may legitimately be named Documents.
+    assert Path(profile_dir) == Path(os.environ["LOCALAPPDATA"]) / "boss-hr-edge-profile"
     # profile 目录不能在用户主目录下混在其它浏览器配置里
     assert _is_absolute_path(profile_dir), profile_dir
 

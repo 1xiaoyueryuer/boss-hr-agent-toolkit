@@ -12,11 +12,10 @@
 ⚠️ 必须走子进程（cli_runner），**不能** `from auto_greet import auto_greet`
 直接调函数：`auto_greet()` 函数体内引用了只在 `if __name__ == '__main__'`
 块里定义的全局 `args`（auto_greet.py:744/753/766），直接调用会在收尾阶段
-抛 NameError。详见 docs/refactor/unified-cli/greet-baseline.md §6.2。
+抛 NameError，因此通过子进程调用其 CLI 入口。
 
-⚠️ greet_log.json 可能不存在：无高分候选人时旧脚本提前 return（rc=0）且
-atexit 的 prune_if_empty() 会删掉整个 run 目录。本模块容忍该文件缺失，
-不断言其存在。详见 greet-baseline.md §6.3。
+⚠️ greet_log.json 可能不存在：无高分候选人时旧脚本提前 return（rc=0）。
+本模块容忍该文件缺失；当前 skip hook 会保留 run 目录。
 """
 from __future__ import annotations
 import json
@@ -187,8 +186,7 @@ def greet_candidates(*, job_name: str, encrypt_job_id: Optional[str],
     greet_log = _read_greet_log(log_path)
 
     if greet_log is None:
-        # 无高分候选人（旧脚本提前 return，未写日志；run 目录可能已被
-        # prune_if_empty 删除）。见 greet-baseline.md §6.3。
+        # 无高分候选人时脚本可能提前返回、未写日志；兼容缺失日志。
         # v1.1.3: status 语义化 → no_candidates；next_action=done。
         return ok(
             status="no_candidates",

@@ -28,6 +28,21 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_greet_service(monkeypatch):
+    """These tests read synthetic logs; never launch Edge or a real worker."""
+    from boss_hr.application import greet_service
+    from boss_hr.adapters import legacy_runner
+
+    monkeypatch.setattr(
+        greet_service, "ensure_browser_ready", lambda **kw: MagicMock(ok=True)
+    )
+    monkeypatch.setattr(
+        legacy_runner, "run_legacy_cli",
+        lambda *args, **kw: MagicMock(returncode=0, stdout="", stderr=""),
+    )
+
+
 # ============================================================
 # conftest: 让 auto_greet 可作为模块导入
 # ============================================================

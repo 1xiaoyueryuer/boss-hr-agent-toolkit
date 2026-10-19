@@ -13,7 +13,7 @@
       │   └── candidate_<geek_id>.json
       └── _skipped.json           # 被跳过的简历
 
-⚠️ 本脚本**只改变输入形式**，不改变评分标准。所有评分锚点（SKILL.md 第 232-287 行）
+⚠️ 本脚本**只改变输入形式**，不改变评分标准。所有评分锚点（boss-hr-auto/SKILL.md）
   保持不变。LLM 仍然按 exp/skill/proj/major 四维评 0-100 分；edu 由 school_tier 查表。
 
 新工作流（替代原来的「LLM 一次性合并到 _llm_scores.json」）：
@@ -114,7 +114,7 @@ def _sanitize_project_experience(proj_exp: list) -> list:
 
 def _sanitize_education(edu: list) -> list:
     """过滤 education[]，保留 school/major/degree/start/end。
-    注意：LLM 仍按 SKILL.md 规则把"最后学历"放第一位；净化层原样保留顺序。
+    注意：净化层原样保留顺序；智能体按 boss-hr-auto/SKILL.md 选择评分校名。
     """
     out = []
     for item in edu or []:

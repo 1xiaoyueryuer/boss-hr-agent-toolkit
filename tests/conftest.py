@@ -1,29 +1,39 @@
 # -*- coding: utf-8 -*-
-"""pytest 配置
-
-解决 school_tier.py 在 import 时对 sys.stdout 的 re-wrap 与 pytest 捕获/输出系统的冲突。
-
-策略：在 conftest 加载阶段（早于任何测试代码 import），把 sys.stdout.encoding
-置为 "utf-8"。这样 school_tier.py 里的 re-wrap 条件（`startswith("utf")`）
-不成立，re-wrap 会被跳过，pytest 的捕获/输出就安全。
-
-⚠️ 2026-08-03 重写：旧实现用 `sys.stdout.reconfigure(encoding="utf-8")`，
-但 pytest 9.x 的 capture 用 tmpfile 包装 sys.stdout；reconfigure 会让 tmpfile
-失效，pytest 退出时抛 `ValueError: I/O operation on closed file`。
-新实现：在子进程启动时已通过环境变量 PYTHONIOENCODING=utf-8 设好编码，
-pytest capture tmpfile 不需要被替换。
+"""Offline test isolation: block unmocked browser/network access and keep all
+output roots and registry writes inside each test workspace.
 """
 import os
 import sys
-import tempfile
+import importlib
+import socket
+import subprocess
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _block_live_browser_access(monkeypatch):
+    """Fail immediately if an offline test misses a browser/network mock."""
+    original_popen = subprocess.Popen
+
+    def guarded_popen(args, *positional, **kwargs):
+        executable = args[0] if isinstance(args, (list, tuple)) else args
+        if "msedge" in str(executable).casefold():
+            raise AssertionError("Offline tests must mock Edge process creation")
+        return original_popen(args, *positional, **kwargs)
+
+    def blocked_connect(*args, **kwargs):
+        raise AssertionError("Offline tests must mock network/CDP connections")
+
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    monkeypatch.setattr(socket.socket, "connect", blocked_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked_connect)
 
 
 # 在 conftest 加载时立刻生效,优先于任何测试文件 import
 # 但不动 sys.stdout 对象本身 —— 避免破坏 pytest capture 的 tmpfile。
 if sys.platform == "win32":
-    # 子进程用 subprocess 启动时已被 PYTHONIOENCODING=utf-8 覆盖（见 _baseline.md）。
+    # 子进程用 subprocess 启动时已被 PYTHONIOENCODING=utf-8 覆盖。
     # 这里只做"保险":如果当前 stdout 编码还不是 utf-8，**只改属性**，不调 reconfigure()。
     if hasattr(sys.stdout, "encoding") and sys.stdout.encoding and not sys.stdout.encoding.lower().startswith("utf"):
         try:
@@ -48,6 +58,9 @@ def _isolate_output_root(tmp_path, monkeypatch):
     文件夹（2026-07-29）。所以必须直接 patch 模块属性。
     """
     monkeypatch.setenv("BOSS_HR_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-appdata"))
+    registry_path = str(tmp_path / "jobs.json")
+    monkeypatch.setenv("BOSS_HR_JOBS_REGISTRY", registry_path)
 
     _shared = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "shared"))
     if _shared not in sys.path:
@@ -60,5 +73,13 @@ def _isolate_output_root(tmp_path, monkeypatch):
         yield
         return
 
-    monkeypatch.setattr(output_manager, "OUTPUT_ROOT", str(tmp_path), raising=False)
+    # Both import spellings occur in the services and worker scripts. Their
+    # constants are captured at import time, including the registry path.
+    # Patch both, and pass the registry override to child processes as well.
+    for name in ("output_manager", "shared.output_manager"):
+        module = importlib.import_module(name)
+        monkeypatch.setattr(module, "OUTPUT_ROOT", str(tmp_path))
+    for name in ("job_registry", "shared.job_registry"):
+        module = importlib.import_module(name)
+        monkeypatch.setattr(module, "JOBS_REGISTRY_PATH", registry_path)
     yield

@@ -1,44 +1,26 @@
-# boss-hr-agent-toolkit — pyproject.toml (v1.1+)
-#
-# 本仓库的「统一 CLI」是 `boss-hr`（子包 `boss_hr/`）。旧业务脚本
-# （boss-job-detail / boss-recommend-downloader / resume-screener /
-# html-report / boss-hr-greet）和 shared/、cli_runner 仍按目录形式
-# 直接被 `boss_hr` 通过子进程调用（详见 docs/refactor/unified-cli/HANDOFF.md）。
-#
-# 为什么 editable install 只暴露 `boss-hr`：
-#   - 7 个统一命令已全部迁移到 boss_hr.cli
-#   - 旧脚本保留为「cli_runner 调用的子进程」，**不再**作为 Python
-#     package 暴露给用户
-#   - 用户安装后应当且仅应当使用 `boss-hr` / `python -m boss_hr`
-
+# GitHub 源码工具包：完整源码 + editable install；内部脚本仍由 CLI 调用。
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boss-hr-agent-toolkit"
-version = "1.1.3"
-description = "BOSS 直聘 HR 简历筛选统一 CLI（v1.1+）"
+version = "1.1.4"
+description = "BOSS 直聘招聘端自动化：一个 Skill 与统一本地 CLI"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [{ name = "boss-hr-agent-toolkit maintainers" }]
+dependencies = ["patchright>=1.40"]
 
-# 唯一第三方依赖（v1.1 BEHAVIOR 约束）
-dependencies = [
-    "patchright>=1.40",
-]
+[project.optional-dependencies]
+dev = ["pytest>=8", "tomli>=2; python_version < '3.11'"]
 
 [project.scripts]
-# 统一 CLI 入口。`python -m boss_hr` 也可用（见 boss_hr/__main__.py）。
 boss-hr = "boss_hr.cli:main"
 
 [tool.setuptools]
-# 只把 boss_hr 子包作为可 import 的 package。
-# 其他业务脚本（boss-job-detail/、boss-recommend-downloader/、
-# resume-screener/、html-report/、boss-hr-greet/）以目录形式留在
-# 项目根，editable install 通过把项目根放进 sys.path 让
-# `boss_hr.application.*_service` 通过 cli_runner 走子进程调用。
+# 仅发布统一 Python 入口；运行需要保留根目录中的业务脚本和 shared/。
 packages = [
     "boss_hr",
     "boss_hr.commands",
@@ -48,7 +30,6 @@ packages = [
 ]
 
 [tool.setuptools.package-dir]
-# 显式声明便于后人扩展。
 "boss_hr" = "boss_hr"
 "boss_hr.commands" = "boss_hr/commands"
 "boss_hr.application" = "boss_hr/application"

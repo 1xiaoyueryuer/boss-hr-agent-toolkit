@@ -45,17 +45,6 @@ class LegacyRunResult:
 _REPORT_PATH_RE = re.compile(r"HTML 报告已生成:\s*(\S.*?)(?:\s*$|\n)", re.MULTILINE)
 
 
-def _decode(b: Optional[bytes]) -> str:
-    if not b:
-        return ""
-    for enc in ("utf-8", "gbk", "latin-1"):
-        try:
-            return b.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return b.decode("utf-8", errors="replace")
-
-
 def _resolve_report_path(eid: str, run_id: str, job_name: str) -> str:
     """从 JobOutputManager 算默认报告路径（旧脚本同款公式）。"""
     from output_manager import JobOutputManager
@@ -76,7 +65,7 @@ def run_legacy_cli(tool: str, args: Sequence[str], *,
     """
     from cli_runner import run_python_cli
 
-    proc = run_python_cli(tool, list(args), timeout=timeout, check=False)
+    proc = run_python_cli(tool, list(args), timeout=timeout)
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
 

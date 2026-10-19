@@ -4,13 +4,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-*.egg-info/
 .venv/
 venv/
 env/
 
 # pytest
 .pytest_cache/
+.pytest-tmp/
 
 # IDE
 .vscode/
@@ -25,7 +25,7 @@ WorkBuddy/
 boss-resumes/
 *.json.bak
 
-# Refactor intermediate artifacts (machine-generated; regenerate via tools/refactor_audit.py)
+# Local intermediate artifacts
 artifacts/refactor/
 
 # Local real smoke / install smoke 目录（隔离但不在仓库内）

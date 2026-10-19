@@ -261,6 +261,19 @@ def test_cli_workflow_doc_exists_and_has_flow():
         assert cmd in src, f"docs/CLI_WORKFLOW.md 缺 {cmd}"
 
 
+def test_single_skill_and_all_local_document_links_resolve():
+    """Removing atomic skills must leave one usable entry and no dead links."""
+    assert sorted(_TOOLKIT_ROOT.glob("**/SKILL.md")) == [_SKILL]
+    docs = [_README, _SKILL, _TOOLKIT_ROOT / "FILE_MANAGEMENT.md"]
+    docs.extend((_TOOLKIT_ROOT / "docs").rglob("*.md"))
+    for path in docs:
+        for target in re.findall(r"\]\(([^)]+)\)", _read(path)):
+            if "://" in target or target.startswith("#"):
+                continue
+            local = target.split("#", 1)[0]
+            assert (path.parent / local).exists(), f"{path}: broken link {target}"
+
+
 # ============================================================
 # 12. CHANGELOG.md
 # ============================================================

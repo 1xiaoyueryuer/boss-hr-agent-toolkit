@@ -425,7 +425,8 @@ def test_fetch_count_maps_to_max_for_both(tmp_path, monkeypatch):
     list_args = mock_calls[0]["args"]
     dl_args = mock_calls[1]["args"]
     assert "--max" in list_args
-    assert list_args[list_args.index("--max") + 1] == "7"
+    # Listing buffers twice the requested count; download still caps at 7.
+    assert list_args[list_args.index("--max") + 1] == "14"
     assert "--max" in dl_args
     assert dl_args[dl_args.index("--max") + 1] == "7"
 

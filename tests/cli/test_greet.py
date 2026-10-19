@@ -427,7 +427,7 @@ def test_greet_no_candidates_returns_ok_zero(monkeypatch, tmp_path):
 
 
 def test_greet_tolerates_pruned_run_dir(monkeypatch, tmp_path):
-    """旧脚本 atexit prune_if_empty 删掉 run 目录后仍不崩（greet-baseline §6.3）。"""
+    """旧脚本 atexit prune_if_empty 删掉 run 目录后仍不崩。"""
     import shutil
     eid, rid, jn = "test_eid_g13", "2026-08-03_120000", "g13_job"
     run_dir = _make_run(tmp_path, eid, rid, jn)
@@ -580,7 +580,7 @@ def test_greet_service_does_not_import_auto_greet_directly():
     """架构约束：greet_service 必须走 cli_runner 子进程。
 
     auto_greet() 函数体引用 __main__ 才定义的全局 args，直接 import 调用会
-    NameError（见 docs/refactor/unified-cli/greet-baseline.md §6.2）。
+    NameError，因此必须通过脚本 CLI 入口运行。
 
     用 AST 检查真实 import 语句，而不是裸文本匹配 —— 模块 docstring 里
     正好写了这条禁令的说明文字，文本匹配会误报。

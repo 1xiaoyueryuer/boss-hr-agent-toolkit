@@ -17,7 +17,10 @@
 from __future__ import annotations
 import ast
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 from pathlib import Path
 
 import pytest
