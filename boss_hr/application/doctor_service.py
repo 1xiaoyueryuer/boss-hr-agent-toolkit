@@ -18,6 +18,7 @@ _TOOLKIT_ROOT = _BOSS_HR.parent
 
 from boss_hr.contracts.results import CommandResult, ok, error
 from boss_hr.contracts.errors import ExitCode, ErrorCode, UnifiedError
+from boss_hr.adapters.browser_environment import BOSS_LOGIN_URL
 from boss_hr.adapters.browser_preflight import (
     BrowserProbe,
     check_python_version,
@@ -49,7 +50,7 @@ def _build_launch_edge_command(edge_path: str, profile_dir: str) -> list[str]:
         f"--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
-        "about:blank",
+        BOSS_LOGIN_URL,
     ]
 
 
@@ -76,6 +77,9 @@ def launch_edge(*, wait_seconds: int = 15) -> dict:
                 "edge_path": None, "profile_dir": None, "pid": None}
 
     profile_dir = _default_profile_dir()
+    if check_cdp_port_listening():
+        return {"ok": True, "error": None, "message": None,
+                "edge_path": edge_path, "profile_dir": profile_dir, "pid": None}
     os.makedirs(profile_dir, exist_ok=True)
 
     cmd = _build_launch_edge_command(edge_path, profile_dir)

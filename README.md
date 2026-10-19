@@ -60,13 +60,15 @@ flowchart LR
 ### 1. 安装本地工具包
 
 ```powershell
-git clone --branch stable/v1.1 https://github.com/1xiaoyueryuer/boss-hr-agent-toolkit.git
+git clone --branch stable/v1.2 https://github.com/1xiaoyueryuer/boss-hr-agent-toolkit.git
 cd boss-hr-agent-toolkit
-python -m pip install -e .
-boss-hr --help
+./install-windows.bat
+python -m boss_hr --help
 ```
 
 也可以下载 [Release 源码包](https://github.com/1xiaoyueryuer/boss-hr-agent-toolkit/releases)，解压后运行 `install-windows.bat`。
+
+安装脚本会检测 64 位 Python 3.10+，补齐 pip 和构建依赖，遇到下载失败时重试并依次尝试 pip 配置源、PyPI、清华镜像，诊断日志保存在源码目录的 `install-windows.log`。双击运行后窗口会保留；自动化使用 `install-windows.bat --no-pause`。无需管理员权限；如 Python 安装目录不可写，可先创建并激活虚拟环境。
 
 这是源码工具包，采用 **editable install**。请保留完整源码目录，移动后重新安装；目前不是独立 wheel，也不通过 PyPI 分发。无需额外下载 Chromium，运行时使用本机 Edge。
 
@@ -84,10 +86,12 @@ boss-hr --help
 
 智能体会从 `boss-hr start "结构工程师"` 开始：
 
-1. **登录**：需要时启动专用 Edge，并提示人工登录招聘端。登录后重试同一条 start。
+1. **登录**：需要时启动专用 Edge，打开 BOSS 官方登录入口。已有登录或验证页会直接复用；重复 start 不会刷新二维码。登录后重试同一条 start。
 2. **确认**：在推荐牛人页面调整筛选条件，回复“继续”后开始获取简历。
 3. **查看**：智能体逐份完成评分，生成报告并提供文件路径。
 4. **可选发送**：只有你明确要求时，才进入打招呼步骤。
+
+若登录页加载失败，先检查网络、代理或浏览器内的安全验证，并在同一个标签页手动刷新后重试。工具会报告页面加载错误，不会循环打开登录页面。
 
 正常使用无需预先手动启动 Edge。若 `boss-hr` 不在 PATH，可使用 `python -m boss_hr`。
 

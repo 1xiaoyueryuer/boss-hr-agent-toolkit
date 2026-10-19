@@ -3,4 +3,4 @@
 # 注意：patchright 在此仅作为 CDP 客户端库使用，不需要执行 patchright install chromium
 
 # CDP 客户端库（连接已有浏览器，不下载 Chromium）
-patchright>=1.40
+patchright==1.59.1

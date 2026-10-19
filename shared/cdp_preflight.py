@@ -15,7 +15,7 @@
 用法：
   from shared.cdp_preflight import connect_cdp, check_login
 
-  session = connect_cdp()  # 默认 http://localhost:9222
+  session = connect_cdp()  # 默认 http://127.0.0.1:9222
   state = check_login(session)
   if not state['logged_in']:
       raise RuntimeError("BOSS 未登录，请扫码")
@@ -25,9 +25,31 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 # BOSS 招聘者 session 的关键 cookie
 RECRUITER_REQUIRED_COOKIES = ("zp_at", "wt2", "bst")
+
+
+def is_boss_url(url: str) -> bool:
+    """Match the actual HTTPS host, never a token/path containing zhipin.com."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        return parts.scheme == "https" and (host == "zhipin.com" or host.endswith(".zhipin.com"))
+    except ValueError:
+        return False
+
+
+def select_page(pages):
+    """Reuse a BOSS tab first, then a blank tab, then an existing tab."""
+    for page in pages:
+        if is_boss_url(page.url or ""):
+            return page
+    for page in pages:
+        if page.url in ("", "about:blank", "edge://newtab/", "chrome://newtab/"):
+            return page
+    return pages[0] if pages else None
 
 # 已知 BOSS 页面 URL 关键字 → 页面类型
 _PAGE_KIND_RULES = [
@@ -60,7 +82,7 @@ class CDPSession:
         self.connected = False
 
 
-def connect_cdp(cdp_url: str = "http://localhost:9222", *, timeout_ms: int = 8000) -> CDPSession:
+def connect_cdp(cdp_url: str = "http://127.0.0.1:9222", *, timeout_ms: int = 8000) -> CDPSession:
     """连到 Edge CDP 调试端口，返回 CDPSession。
 
     异常处理：
@@ -72,20 +94,20 @@ def connect_cdp(cdp_url: str = "http://localhost:9222", *, timeout_ms: int = 800
         from patchright.sync_api import sync_playwright
     except ImportError as e:
         raise RuntimeError(
-            "patchright 未安装。请运行: pip install patchright && patchright install chromium"
+            "patchright 未安装。请运行: python -m pip install patchright（使用本机 Edge，无需下载 Chromium）"
         ) from e
 
     session = CDPSession(cdp_url=cdp_url)
     try:
         session.playwright = sync_playwright().start()
         session.browser = session.playwright.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
-        # 取第一个非空 context，再取第一个 page
+        # Reuse the BOSS tab even when Edge restored a blank/startup tab first.
         contexts = session.browser.contexts or []
         if not contexts:
             raise RuntimeError("CDP 已连，但 browser 没有 context（可能刚启动还没页面）")
         session.context = contexts[0]
         pages = session.context.pages or []
-        session.page = pages[0] if pages else session.context.new_page()
+        session.page = select_page(pages) if pages else session.context.new_page()
         session.connected = True
         return session
     except Exception as e:
@@ -160,6 +182,8 @@ def check_login(session: CDPSession) -> dict[str, Any]:
 
 
 __all__ = [
+    "is_boss_url",
+    "select_page",
     "CDPSession",
     "connect_cdp",
     "check_login",

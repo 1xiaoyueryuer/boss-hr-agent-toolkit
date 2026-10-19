@@ -30,7 +30,7 @@ sys.path.insert(0, str(_TOOLKIT_ROOT / "shared"))
 from boss_hr.contracts.errors import ErrorCode, UnifiedError  # noqa: E402
 
 
-CDP_URL_DEFAULT = "http://localhost:9222"
+CDP_URL_DEFAULT = "http://127.0.0.1:9222"
 CDP_HOST = "127.0.0.1"
 CDP_PORT = 9222
 

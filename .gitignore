@@ -11,6 +11,7 @@ env/
 # pytest
 .pytest_cache/
 .pytest-tmp/
+install-windows.log
 
 # IDE
 .vscode/

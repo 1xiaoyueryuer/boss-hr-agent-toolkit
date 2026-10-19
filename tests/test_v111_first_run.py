@@ -202,9 +202,10 @@ def test_doctor_launch_edge_uses_dedicated_profile(monkeypatch):
             self.pid = 99999
 
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    listening = iter([False, True])
     monkeypatch.setattr(
         "boss_hr.application.doctor_service.check_cdp_port_listening",
-        lambda *a, **kw: True,
+        lambda *a, **kw: next(listening),
     )
 
     res = ds.launch_edge(wait_seconds=2)

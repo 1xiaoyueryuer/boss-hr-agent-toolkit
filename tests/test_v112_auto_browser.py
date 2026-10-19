@@ -574,7 +574,8 @@ def test_launch_dedicated_edge_uses_specific_flags(monkeypatch):
     monkeypatch.setattr(be, "check_edge_executable",
                         lambda: r"C:\fake\msedge.exe")
     monkeypatch.setattr(be, "_ensure_dir", lambda p: None)
-    monkeypatch.setattr(be, "check_cdp_port_listening", lambda *a, **kw: True)
+    listening = iter([False, True])
+    monkeypatch.setattr(be, "check_cdp_port_listening", lambda *a, **kw: next(listening))
 
     captured = {}
     class _P:
@@ -589,7 +590,7 @@ def test_launch_dedicated_edge_uses_specific_flags(monkeypatch):
     cmd = captured["cmd"]
     assert any("--user-data-dir=" in a for a in cmd)
     assert any("--remote-debugging-port=9222" in a for a in cmd)
-    assert any("about:blank" in a for a in cmd)
+    assert be.BOSS_LOGIN_URL in cmd
 
 
 def test_launch_dedicated_edge_no_edge_returns_edge_not_found(monkeypatch):
@@ -614,6 +615,8 @@ def test_open_login_page_success_returns_true(monkeypatch):
         def goto(self, url, **kw):
             self.url = url
         def bring_to_front(self):
+            pass
+        def wait_for_function(self, *args, **kwargs):
             pass
 
     class _FakeSession:
@@ -650,6 +653,8 @@ def test_open_login_page_uses_single_playwright(monkeypatch):
         def goto(self, url, **kw):
             pass
         def bring_to_front(self):
+            pass
+        def wait_for_function(self, *args, **kwargs):
             pass
 
     class _FakeSession:
@@ -707,6 +712,8 @@ def test_open_login_page_unexpected_host_returns_reason(monkeypatch):
         def goto(self, url, **kw):
             self.url = "https://evil.example.com/phish"
         def bring_to_front(self):
+            pass
+        def wait_for_function(self, *args, **kwargs):
             pass
 
     class _FakeSession:

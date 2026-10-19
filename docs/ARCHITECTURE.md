@@ -57,4 +57,4 @@ python -m boss_hr doctor --skip-browser
 
 ## 发布
 
-稳定线为 `stable/v1.1`，本次版本 `1.1.4`，标签 `v1.1.4`。发布源码工具包，使用 editable install；目前不提供包含全部运行资源的独立 wheel，也不发布到 PyPI。移动源码后重新安装。
+稳定线为 `stable/v1.2`，本次版本 `1.2.1`，标签 `v1.2.1`。历史 `v1.2.0` 标签保持不变。发布源码工具包，使用 editable install；目前不提供包含全部运行资源的独立 wheel，也不发布到 PyPI。移动源码后重新安装。

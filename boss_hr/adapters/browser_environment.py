@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
+from urllib.parse import urlsplit
 
 _HERE = Path(__file__).resolve().parent
 _BOSS_HR = _HERE.parent
@@ -55,10 +56,8 @@ from boss_hr.adapters.browser_preflight import (  # noqa: E402
 
 CDP_LAUNCH_WAIT_SECONDS = 15
 LOGIN_POLL_INTERVAL = 1.0
-BOSS_LOGIN_URL = "https://www.zhipin.com/web/chat/index"
-EDGE_BROWSER_LOGIN_URL = (
-    "https://www.zhipin.com/web/chat/recommend"
-)
+BOSS_LOGIN_URL = "https://www.zhipin.com/web/user/?intent=1"
+EDGE_BROWSER_LOGIN_URL = BOSS_LOGIN_URL
 
 
 @dataclass
@@ -105,7 +104,7 @@ def _build_edge_launch_command(edge_path: str,
         "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
-        "about:blank",
+        BOSS_LOGIN_URL,
     ]
 
 
@@ -142,6 +141,8 @@ def launch_dedicated_edge(*, wait_seconds: int = CDP_LAUNCH_WAIT_SECONDS
         )
 
     profile_dir = _dedicated_profile_dir()
+    if check_cdp_port_listening():
+        return _EdgeLaunch(ok=True, edge_path=edge_path, profile_dir=profile_dir)
     _ensure_dir(profile_dir)
 
     cmd = _build_edge_launch_command(edge_path, profile_dir)
@@ -180,65 +181,106 @@ def launch_dedicated_edge(*, wait_seconds: int = CDP_LAUNCH_WAIT_SECONDS
 # 登录状态轮询（不填表 / 不读 cookie 值 / 不绕过）
 # ============================================================
 
-def _open_login_page(url: str = EDGE_BROWSER_LOGIN_URL,
-                     timeout_seconds: int = 8) -> tuple[bool, str]:
-    """通过 patchright + CDP 在专用 Edge 中打开 BOSS 招聘者登录/后台入口。
+def _wait_for_page_content(page, timeout_ms: int) -> None:
+    """A committed URL alone does not mean a login/verification page rendered."""
+    page.wait_for_function(
+        """() => {
+            const b = document.body;
+            return !!b && (b.innerText.trim().length > 0 ||
+                [...b.querySelectorAll('img,canvas,iframe,input,button')].some(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }));
+        }""",
+        timeout=timeout_ms,
+    )
 
-    复用 `shared.cdp_preflight.connect_cdp` 建立的会话（不要再开第二个
-    playwright 实例，避免与 `_poll_login_status` 抢同一 9222 端口导致
-    "Playwright Sync API inside the asyncio loop" 异常）。
 
-    返回 (ok, reason)：
-      - (True, "")：页面已导航到 `url`（或同源 BOSS 招聘者域）且已
-        bring_to_front；
-      - (False, "<脱敏错误类型>"): 失败原因；**不**含 Cookie / URL token /
-        用户名。
-
-    设计原则：
-      - 不静默吞异常：失败原因透出到上层 info，便于诊断；
-      - 不伪称已打开：失败时 `login_page_opened` 严格为 False；
-      - 不重复登录/不填表/不读 cookie 值。
-    """
+def _show_qr_login(page, timeout_ms: int) -> None:
+    """Switch the official SMS form to QR once; leave QR/security pages alone."""
+    if urlsplit(page.url or "").path.rstrip("/") != "/web/user":
+        return
     try:
-        from shared.cdp_preflight import connect_cdp
-    except ImportError as e:
-        return False, f"ImportError: {type(e).__name__}"
+        switch = page.locator(".btn-sign-switch.ewm-switch")
+        if switch.is_visible():
+            switch.click(timeout=min(1500, timeout_ms))
+    except Exception:
+        # Optional UI convenience: a rendered login form is still usable if
+        # BOSS changes its switch control. Never retry clicks or fill a form.
+        pass
+
+
+def _open_login_page(url: str = EDGE_BROWSER_LOGIN_URL,
+                     timeout_seconds: int = 30) -> tuple[bool, str]:
+    """Reuse rendered BOSS pages; repair a blank backend entry once.
+
+    Never refresh an existing login/verification page on command retries, since
+    doing so invalidates QR codes and can repeatedly interrupt SPA loading.
+    Errors contain types only, never URL query tokens or cookie values.
+    """
+    from shared.cdp_preflight import connect_cdp, is_boss_url
 
     sess = None
     try:
         sess = connect_cdp(CDP_URL_DEFAULT, timeout_ms=4000)
         page = sess.page
         if page is None:
-            return False, "CDPSession 无可用 page"
-
-        # 导航到 BOSS 招聘者入口（不阻塞过久；超时走 fail-soft）
-        try:
-            page.goto(url, wait_until="domcontentloaded",
-                      timeout=timeout_seconds * 1000)
-        except Exception as e:
-            return False, f"goto:{type(e).__name__}"
-
-        # 校验最终 URL：必须是 zhipin.com 域（避免被劫持到 about:blank）
-        try:
-            final_url = page.url or ""
-        except Exception as e:
-            return False, f"url_read:{type(e).__name__}"
-        if "zhipin.com" not in final_url:
-            return False, f"unexpected_host:{final_url[:32]}"
-
+            return False, "CDPSession has no page"
         try:
             page.bring_to_front()
         except Exception:
-            # bring_to_front 失败不影响"已打开"语义
             pass
 
+        deadline = time.monotonic() + timeout_seconds
+
+        def remaining_ms():
+            return max(1, int((deadline - time.monotonic()) * 1000))
+
+        current = page.url or ""
+        if is_boss_url(current):
+            backend_entry = urlsplit(current).path.startswith("/web/chat/")
+            try:
+                _wait_for_page_content(page, min(5000, remaining_ms())
+                                       if backend_entry else remaining_ms())
+                if not is_boss_url(page.url or ""):
+                    return False, "unexpected_host:non_boss"
+                _show_qr_login(page, remaining_ms())
+                return True, ""
+            except Exception:
+                # Let the existing login or verification finish loading. Retrying
+                # start must not turn a slow/blocked login into a reload loop.
+                if not backend_entry:
+                    return False, "page_content_timeout"
+                if is_boss_url(page.url or "") and not urlsplit(page.url).path.startswith("/web/chat/"):
+                    try:
+                        _wait_for_page_content(page, remaining_ms())
+                    except Exception:
+                        return False, "page_content_timeout"
+                    if not is_boss_url(page.url or ""):
+                        return False, "unexpected_host:non_boss"
+                    _show_qr_login(page, remaining_ms())
+                    return True, ""
+                # A blank protected backend route can be repaired by going
+                # directly to the official public login entry.
+
+        navigation_error = None
+        try:
+            page.goto(url, wait_until="commit", timeout=remaining_ms())
+        except Exception as exc:
+            navigation_error = type(exc).__name__
+            # A timeout after commit may still render; inspect before failing.
+        if not is_boss_url(page.url or ""):
+            return False, ("goto:" + navigation_error if navigation_error else "unexpected_host:non_boss")
+        try:
+            _wait_for_page_content(page, remaining_ms())
+        except Exception:
+            return False, "page_content_timeout"
+        if not is_boss_url(page.url or ""):
+            return False, "unexpected_host:non_boss"
+        _show_qr_login(page, remaining_ms())
         return True, ""
-    except RuntimeError as e:
-        # connect_cdp 自身失败（CDP 不可达 / patchright 未装）
-        return False, f"RuntimeError:{type(e).__name__}"
-    except Exception as e:
-        # 兜底：记录类型，不泄露消息
-        return False, f"{type(e).__name__}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:connect_or_page"
     finally:
         if sess is not None:
             try:
