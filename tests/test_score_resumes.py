@@ -283,6 +283,7 @@ def test_candidate_to_report_shape():
     c = sr.candidate_to_report(s, rank=1)
     assert c["rank"] == 1
     assert c["name"] == "测试1"
+    assert c["advice"] == ""
     assert c["school"] == "辽宁工业大学/车辆工程/本科"
     assert c["tier"] in {"推荐", "待定", "不推荐"}
     assert isinstance(c["total"], (int, float))
@@ -311,6 +312,8 @@ def test_build_actions_buckets_correctly():
     # 推荐/待定 桶里有 action 字段
     assert all("action" in item for item in actions["recommend"])
     assert all("action" in item for item in actions["pending"])
+    assert actions["recommend"][0]["action"] == "尽快约面"
+    assert actions["pending"][0]["action"] == "问问项目"
     # 不推荐 桶里有 concerns 字段
     assert all("concerns" in item for item in actions["reject"])
 

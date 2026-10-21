@@ -422,7 +422,8 @@ def test_finalize_screening_results_match_old_implementation(workspace):
                               "--encrypt-job-id", eid, "--run-id", target, env_extra=env_extra)
     assert c_proc.returncode == 0
     s_proc = _run_old_score("--job-name", job_name,
-                            "--encrypt-job-id", eid, "--run-id", target, env_extra=env_extra)
+                            "--encrypt-job-id", eid, "--run-id", target,
+                            "--rescore", env_extra=env_extra)
     assert s_proc.returncode == 0
     old_data = json.loads(new_screening_path.read_text(encoding="utf-8"))
 
@@ -471,7 +472,7 @@ def test_finalize_run_json_score_state_change(workspace):
     assert new_run["last_step"] == "score"
     assert new_run["finished"] is False  # score 不调 finish
 
-    # 旧实现：collect + score_resumes
+    # 对同一批已评分数据显式重评，比较入口的结果与状态变化。
     # 重置 run.json
     (tmp_path / eid / "runs" / target / "run.json").write_text(json.dumps({
         "run_id": target, "encrypt_job_id": eid,
@@ -484,7 +485,8 @@ def test_finalize_run_json_score_state_change(workspace):
     _run_old_collect("--job-name", job_name,
                      "--encrypt-job-id", eid, "--run-id", target, env_extra=env_extra)
     _run_old_score("--job-name", job_name,
-                   "--encrypt-job-id", eid, "--run-id", target, env_extra=env_extra)
+                   "--encrypt-job-id", eid, "--run-id", target,
+                   "--rescore", env_extra=env_extra)
     old_run = json.loads(
         (tmp_path / eid / "runs" / target / "run.json").read_text(encoding="utf-8"))
 

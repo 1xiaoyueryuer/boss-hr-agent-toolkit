@@ -7,7 +7,7 @@
   - 中途崩了下次只需补未评的部分；落盘的进度是确定的、可重入的
   - 本脚本做一次**确定性合并**，把 outputs/ 拼成 _llm_scores.json（score_resumes.py 接的标准）
 
-⚠️ 本脚本**不读简历、不做评分**，只做文件收集 + 数组拼接 + manifest 状态回写。
+本脚本只读原始简历的身份字段，不做评分；负责身份校验、合并和 manifest 状态回写。
    评分标准、edu 校准、加权、tier 判定全部交给 score_resumes.py。
 
 幂等性：
@@ -87,6 +87,7 @@ def main():
     # 解析 encrypt_job_id
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'shared'))
     from output_manager import JobOutputManager, resolve_encrypt_job_id
+    from score_identity import bind_score_identity
     encrypt_job_id = resolve_encrypt_job_id(args.encrypt_job_id, allow_fallback=False)
     out = JobOutputManager(args.job_name, encrypt_job_id=encrypt_job_id, run_id=args.run_id)
 
@@ -122,6 +123,12 @@ def main():
     # 读 manifest
     manifest = json.load(open(manifest_path, encoding="utf-8"))
     candidates = manifest.get("candidates", [])
+    raw_resumes = json.load(open(out.new_resumes_path, encoding="utf-8"))
+    resumes_by_gid = {
+        r["_meta"]["encrypt_geek_id"]: r
+        for r in raw_resumes
+        if isinstance(r, dict) and (r.get("_meta") or {}).get("encrypt_geek_id")
+    }
 
     # 收 outputs/ 下的所有 candidate_*.json（按 manifest 顺序，确保确定性）
     merged = []
@@ -151,16 +158,17 @@ def main():
 
         # 校验
         errs = _validate_score(score)
+        resume = resumes_by_gid.get(geek_id)
+        if resume is None:
+            errs.append(f"manifest 中的 geek_id={geek_id!r} 不属于当前任务的原始简历")
+        elif entry["name"] != resume["name"].strip():
+            errs.append("manifest 姓名与原始简历不一致，请重新准备评分输入")
+        elif not errs:
+            errs.extend(bind_score_identity(score, resume, encrypt_job_id))
         if errs:
             invalid.append({"geek_id": geek_id, "name": entry["name"], "errors": errs})
             status_updated.append({**entry, "status": "invalid"})
             continue
-
-        # 注入 geek_id / job_id（防御性：如果 LLM 漏写，从 manifest 补）
-        if not score.get("geek_id"):
-            score["geek_id"] = geek_id
-        if not score.get("job_id"):
-            score["job_id"] = entry.get("job_id") or encrypt_job_id
 
         merged.append(score)
         status_updated.append({**entry, "status": "scored"})

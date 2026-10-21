@@ -31,6 +31,8 @@ CLI 负责参数、状态校验、编排和 JSON 结果，业务脚本负责浏�
 
 `shared/` 提供输出路径、岗位元数据、run 边界、候选人状态、CDP、编码与鼠标交互。`shared/cli_runner.py` 的白名单列出了仍在执行的 9 个内部工具。
 
+评分合并与校准共用 `shared/score_identity.py`，以本轮原始简历校验候选人身份。报告转换保留逐人的 advice 和 ID；HTML 生成器只渲染模板结构，外部字段统一按文本转义。
+
 ## v1.1.4 清理依据
 
 - 6 个原子 skill：操作已由 CLI 编排，评分说明已合并到唯一 skill，删除。
@@ -57,4 +59,4 @@ python -m boss_hr doctor --skip-browser
 
 ## 发布
 
-稳定线为 `stable/v1.2`，本次版本 `1.2.1`，标签 `v1.2.1`。历史 `v1.2.0` 标签保持不变。发布源码工具包，使用 editable install；目前不提供包含全部运行资源的独立 wheel，也不发布到 PyPI。移动源码后重新安装。
+稳定线为 `stable/v1.2`，本次版本 `1.2.2`，标签 `v1.2.2`。历史标签保持不变。发布源码工具包，使用 editable install；目前不提供包含全部运行资源的独立 wheel，也不发布到 PyPI。移动源码后重新安装。

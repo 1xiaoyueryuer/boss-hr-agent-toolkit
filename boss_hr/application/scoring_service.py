@@ -367,8 +367,6 @@ def finalize_when_ready(*, job_name: str, encrypt_job_id: Optional[str],
 
     invalid_list = collect_payload.get("invalid", []) or []
     missing_list = collect_payload.get("missing", []) or []
-    merged_count = collect_payload.get("merged_count", 0)
-    merged_file = collect_payload.get("merged_file")
 
     if invalid_list:
         # 返回第一位 invalid 候选人；让 LLM 覆盖 output 后再 finalize
@@ -427,12 +425,22 @@ def finalize_when_ready(*, job_name: str, encrypt_job_id: Optional[str],
                      run_id=run_id, encrypt_job_id=eid, job_name=job_name,
                      exit_code=ExitCode(score_result.returncode))
 
+    # 以实际生成的结果计数，不能把 collect 数量当作最终评分数量。
+    if not os.path.isfile(screening_results_path):
+        return error(error_obj=UnifiedError(
+            code=ErrorCode.INTERNAL,
+            message="评分脚本未生成 screening_results.json，请检查本轮候选人是否已评分",
+        ), run_id=run_id, encrypt_job_id=eid, job_name=job_name,
+            exit_code=ExitCode.INTERNAL)
+    with open(screening_results_path, "r", encoding="utf-8") as f:
+        scored = len(json.load(f).get("candidates", []))
+
     # 成功
     return ok(
         status="scoring_complete",
         run_id=run_id, encrypt_job_id=eid, job_name=job_name,
         data={
-            "scored": merged_count,
+            "scored": scored,
             "screening_results_file": str(out.screening_results_path),
         },
         next_action="report",

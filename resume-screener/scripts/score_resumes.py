@@ -189,6 +189,8 @@ def candidate_to_report(c: dict, rank: int) -> dict:
     return {
         "rank": rank,
         "name": c["name"],
+        "geek_id": c.get("geek_id", ""),
+        "job_id": c.get("job_id", ""),
         "tier": c["tier"],
         "total": c["total"],
         "hard_pass": c.get("hard_pass", True),
@@ -207,6 +209,7 @@ def candidate_to_report(c: dict, rank: int) -> dict:
         ],
         "highlights": c.get("highlights", c.get("signals", [])),
         "concerns": c.get("concerns", c.get("gaps", [])),
+        "advice": c.get("advice", ""),
     }
 
 
@@ -275,6 +278,7 @@ def main():
     from output_manager import OUTPUT_ROOT, JobOutputManager, resolve_encrypt_job_id
     from run_orchestrator import RunOrchestrator
     from job_resume_store import JobResumeStore
+    from score_identity import bind_score_identity
     encrypt_job_id = resolve_encrypt_job_id(args.encrypt_job_id)
     if not encrypt_job_id:
         raise ValueError("缺少 encrypt_job_id。\n  传 --encrypt-job-id，或设置 env BOSS_HR_ENCRYPT_JOB_ID")
@@ -314,6 +318,7 @@ def main():
     # 重要（2026-07-30 数据边界）：只从当前 run 的 process/ 读简历，绝不读
     # state/resumes_master.json（那是跨 run 累计文件）。
     name_to_gids = {}
+    resumes_by_gid = {}
     run_resume_paths = []
     for p in (out.new_resumes_path,
               out.get_process_path('batch_1_resumes.json'),
@@ -342,97 +347,45 @@ def main():
             _n = (r.get("name") or "").strip()
             _gid = (r.get("_meta", {}) or {}).get("encrypt_geek_id", "") or ""
             if _n and _gid:
-                name_to_gids.setdefault(_n, []).append(_gid)
+                gids = name_to_gids.setdefault(_n, [])
+                if _gid not in gids:
+                    gids.append(_gid)
+                resumes_by_gid[_gid] = r
 
-    def _find_prefix_for(item, g):
-        """在当前 run 的 process/ 简历里找带 gid 的前缀（兼容 job_id 多 prefix 的情况）。
-
-        2026-07-30 重构：只扫当前 run 的 process/，绝不读 state/resumes_master.json。
-        """
-        item_job_id = (item.get("job_id") or "").strip()
-        for path in run_resume_paths:
-            if not os.path.exists(path):
+    # 先绑定身份，再去重。--rescore 仅控制重评，不绕过身份校验。
+    invalid = []
+    for c in data:
+        gid = (c.get("geek_id") or "").strip()
+        if not gid:
+            gids = name_to_gids.get((c.get("name") or "").strip(), [])
+            if len(gids) != 1:
+                invalid.append({"name": c.get("name"),
+                                "errors": ["姓名无法唯一对应当前任务简历，请填写 geek_id"]})
                 continue
-            try:
-                arr = json.load(open(path, encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(arr, list):
-                continue
-            for r in arr:
-                if not isinstance(r, dict):
-                    continue
-                meta = r.get("_meta", {}) or {}
-                rid = meta.get("encrypt_geek_id", "") or ""
-                if rid != g:
-                    continue
-                eid = meta.get("encrypt_job_id", "") or ""
-                if eid:
-                    return eid
-                if item_job_id:
-                    return item_job_id
-                return store.encrypt_job_id
-        if item_job_id:
-            return item_job_id
-        return store.encrypt_job_id
+            gid = gids[0]
+        resume = resumes_by_gid.get(gid)
+        errors = (bind_score_identity(c, resume, encrypt_job_id) if resume else
+                  [f"geek_id={gid!r} 不属于当前任务的原始简历"])
+        if errors:
+            invalid.append({"name": c.get("name"), "errors": errors})
+    if invalid:
+        print(json.dumps({"status": "blocked", "exit_code": 26,
+                          "message": "评分身份不一致，请修正评分输入后重试",
+                          "invalid": invalid}, ensure_ascii=False))
+        raise SystemExit(26)
 
-    def _unscored_gid(item):
-        """返回该候选人「尚未评分」的 geek_id。
-
-        优先用 item['geek_id']（LLM 评分时直接传更准）；
-        兜底从 name_to_gids 反查（重名策略：只要还有未评分的同名候选人就放行）。
-
-        返回值：
-            str  : 找到了未评分的 geek_id（且确认在当前 run 简历池中）
-            ''   : _llm_scores.json 里的 geek_id 在当前 run 简历池里查无此人（拒绝评分）
-            None : 该姓名下所有 geek_id 都已评过（应跳过）
-
-        2026-07-30 数据边界改造：
-          ''（当前 run 查无此人）也走拒绝路径，并打印警告。
-        """
-        gid = (item.get("geek_id") or "").strip()
-        if gid:
-            # 校验 1：必须在当前 run 简历池里（支持多 prefix 兜底）
-            matched_prefix = _find_prefix_for(item, gid)
-            if not matched_prefix:
-                return ''
-            # 校验 2：还没评过
-            if not store.is_scored(matched_prefix, gid):
-                return gid
-            return None  # 该 ID 已评分
-        # 兜底：按姓名反查
-        name = item.get("name", "")
-        gids = name_to_gids.get(name)
-        if not gids:
-            return ''
-        for g in gids:
-            matched_prefix = _find_prefix_for(item, g)
-            if matched_prefix and not store.is_scored(matched_prefix, g):
-                return g
-        return None
-
-    # 跨 run 去重：跳过历史已评分的候选人（--rescore 可关闭）
-    # 2026-07-30 数据边界：''（当前 run 查无此人）也走跳过路径，并打印警告
+    # 已校验的稳定 ID 直接用于去重及状态回写，不再通过姓名重新分配。
     if not args.rescore:
-        _kept, _skipped, _rejected = [], [], []
+        _kept, _skipped = [], []
         for c in data:
-            verdict = _unscored_gid(c)
-            if verdict is None:
+            if store.is_scored(store.encrypt_job_id, c["geek_id"]):
                 _skipped.append(c.get("name", ""))
-            elif verdict == "":
-                _rejected.append(c.get("name", ""))
             else:
                 _kept.append(c)
         if _skipped:
             print(f"⏭ 跳过 {len(_skipped)} 位历史已评分候选人：{'、'.join(_skipped[:8])}"
                   + ("..." if len(_skipped) > 8 else ""))
             print("   （如需重评请加 --rescore）")
-        if _rejected:
-            print(f"🚫 拒绝 {len(_rejected)} 位不属于当前 run 的候选人："
-                  f"{'、'.join(_rejected[:8])}"
-                  + ("..." if len(_rejected) > 8 else ""))
-            print("   （_llm_scores.json 里的 geek_id 在当前 run 的 process/ 简历池中查无此人。"
-                  "评分脚本只认当前 run 自己的简历，绝不跨 run / 跨目录补齐。）")
         data = _kept
         if not data:
             print("本轮无新候选人可评分，退出。")
@@ -486,26 +439,15 @@ def main():
     print(f"  推荐 {summary['recommend']} / 待定 {summary['pending']} / 不推荐 {summary['reject']}")
     print(f"  输出: {args.output}")
 
-    # 回写评分状态（下次 run 自动跳过这批人）
-    #
-    # 已知限制：同一批里出现多个同名候选人时（BOSS 匿名昵称），
-    # 分数与 geek_id 的对应按循环顺序分配，可能错配。
-    # 影响可控 —— scored_state 的用途是"是否评过"的布尔判断，
-    # total/tier 仅供排查参考；准确的评分结果以 screening_results.json 为准。
+    # 回写评分状态（下次 run 自动跳过这批人）。
     _marked = 0
     for c in data:
-        gid = _unscored_gid(c)
-        # '' = 简历池里查无此人；None = 同名者已全部评过（--rescore 时会走到）
-        if not gid:
-            continue
-        store.mark_scored(store.encrypt_job_id, gid,
+        store.mark_scored(store.encrypt_job_id, c["geek_id"],
                           name=c.get("name", ""), total=c.get("total"),
                           tier=c.get("tier", ""), run_id=run_id)
         _marked += 1
     if _marked:
         print(f"  已记录 {_marked} 人评分状态 → state/scored_state.json")
-    if _marked < len(data):
-        print(f"  ⚠ {len(data) - _marked} 人未匹配到 geek_id，未记录（下次可能重复评分）")
 
     orch.mark_done('score', run_id=run_id)  # 标记 score 步骤完成
 

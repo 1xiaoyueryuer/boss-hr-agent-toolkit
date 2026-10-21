@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boss-hr-agent-toolkit"
-version = "1.2.1"
+version = "1.2.2"
 description = "BOSS 直聘招聘端自动化：一个 Skill 与统一本地 CLI"
 readme = "README.md"
 requires-python = ">=3.10"

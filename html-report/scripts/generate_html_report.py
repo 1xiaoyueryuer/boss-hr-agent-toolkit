@@ -5,7 +5,7 @@
   - 通用 schema：接受任意 score_resumes.py 输出的 screening_results.json
   - 视觉沿用原 generate_report.py 风格（黑蓝渐变 + 玻璃质感 + stat-card 配色）
   - 字段全部 .get() 处理，缺失自动跳过
-  - LLM 自由填写的亮点/顾虑/建议直接渲染
+  - 外部字段按纯文本显示，HTML 结构只由模板生成
 
 输入：screening_results.json（score_resumes.py 输出）
   {
@@ -41,6 +41,7 @@ import sys
 import io
 import argparse
 import datetime
+from html import escape
 from pathlib import Path
 
 # 注意：禁止在 import 时重写 sys.stdout（会导致被 import 的驱动脚本 print 报
@@ -134,6 +135,11 @@ tr:hover { background:#f9fafb; }
 
 
 # === 视觉工具函数 ===
+def text(value):
+    """简历、JD 和模型输出均按文本插入；不接受外部 HTML。"""
+    return escape(str(value)) if value is not None else ""
+
+
 def bar_color(pct):
     if pct >= 70:
         return "#059669"
@@ -159,38 +165,39 @@ def render_candidate(c, labels, rank):
       <div class="card-header">
         <div class="card-title">
           <span class="rank">❌</span>
-          <h3>{c['name']}</h3>
+          <h3>{text(c['name'])}</h3>
           {tier_badge('硬淘汰')}
         </div>
         <div class="total-score">—</div>
       </div>
-      <div class="reject-reason">🚫 {c.get('hard_reason', '未通过硬门槛')}</div>
+      <div class="reject-reason">🚫 {text(c.get('hard_reason', '未通过硬门槛'))}</div>
     </div>"""
 
     dims_html = ""
     for i, d in enumerate(c.get("dimensions", [])):
         label = labels[i] if i < len(labels) else f"维度{i+1}"
-        color = bar_color(d.get("pct", 0))
+        pct = max(0, min(100, float(d.get("pct", 0))))
+        color = bar_color(pct)
         dims_html += f"""
         <div class="dim-row">
           <div class="dim-header">
-            <span class="dim-label">{label} <span class="dim-weight">({d.get('weight', 0)}%)</span></span>
-            <span class="dim-score">{d.get('pct', 0)}% → <strong>{d.get('weighted', 0):.2f}</strong> 分</span>
+            <span class="dim-label">{text(label)} <span class="dim-weight">({text(d.get('weight', 0))}%)</span></span>
+            <span class="dim-score">{pct:g}% → <strong>{d.get('weighted', 0):.2f}</strong> 分</span>
           </div>
-          <div class="bar"><div class="bar-fill" style="width:{d.get('pct', 0)}%;background:{color}"></div></div>
-          <div class="dim-reason">{d.get('reason', '')}</div>
+          <div class="bar"><div class="bar-fill" style="width:{pct:g}%;background:{color}"></div></div>
+          <div class="dim-reason">{text(d.get('reason', ''))}</div>
         </div>"""
 
     custom_html = ""
     if c.get("highlights"):
-        items = "".join(f"<li>{h}</li>" for h in c["highlights"])
+        items = "".join(f"<li>{text(h)}</li>" for h in c["highlights"])
         custom_html += f"""
         <div class="custom-section highlights">
           <div class="custom-label">✨ 亮点</div>
           <ul>{items}</ul>
         </div>"""
     if c.get("concerns"):
-        items = "".join(f"<li>{x}</li>" for x in c["concerns"])
+        items = "".join(f"<li>{text(x)}</li>" for x in c["concerns"])
         custom_html += f"""
         <div class="custom-section concerns">
           <div class="custom-label">⚠ 顾虑</div>
@@ -201,15 +208,15 @@ def render_candidate(c, labels, rank):
     <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <span class="rank">#{rank}</span>
-          <h3>{c['name']}</h3>
+          <span class="rank">#{text(rank)}</span>
+          <h3>{text(c['name'])}</h3>
           {tier_badge(c.get('tier', ''))}
         </div>
         <div class="total-score">{c.get('total', 0):.2f}</div>
       </div>
       <div class="meta">
-        <span>🎓 {c.get('school', '')}</span>
-        <span>💼 {c.get('work_years', '')} · {c.get('current_role', '')}</span>
+        <span>🎓 {text(c.get('school', ''))}</span>
+        <span>💼 {text(c.get('work_years', ''))} · {text(c.get('current_role', ''))}</span>
       </div>
       <div class="dims">{dims_html}</div>
       {custom_html}
@@ -220,7 +227,7 @@ def render_action(name, score, body):
     return f"""
     <div class="action-card">
       <div class="action-header">
-        <span class="action-name">{name}</span>
+        <span class="action-name">{text(name)}</span>
         <span class="action-score">{score:.2f} 分</span>
       </div>
       {body}
@@ -239,10 +246,10 @@ def render(data: dict) -> str:
     for c in candidates:
         if not c.get("hard_pass", True):
             empty_cells = "".join("<td>—</td>" for _ in labels)
-            rank_rows += f'<tr class="row-rejected"><td>❌</td><td>{c["name"]}</td><td>—</td>{empty_cells}<td>{tier_badge("硬淘汰")}</td></tr>'
+            rank_rows += f'<tr class="row-rejected"><td>❌</td><td>{text(c["name"])}</td><td>—</td>{empty_cells}<td>{tier_badge("硬淘汰")}</td></tr>'
         else:
             dim_cells = "".join(f"<td>{d.get('weighted', 0):.2f}</td>" for d in c.get("dimensions", []))
-            rank_rows += f'<tr><td class="rank">#{c.get("rank", "?")}</td><td><strong>{c["name"]}</strong></td><td class="total">{c.get("total", 0):.2f}</td>{dim_cells}<td>{tier_badge(c.get("tier", ""))}</td></tr>'
+            rank_rows += f'<tr><td class="rank">#{text(c.get("rank", "?"))}</td><td><strong>{text(c["name"])}</strong></td><td class="total">{c.get("total", 0):.2f}</td>{dim_cells}<td>{tier_badge(c.get("tier", ""))}</td></tr>'
 
     cand_cards = "".join(render_candidate(c, labels, c.get("rank", i + 1)) for i, c in enumerate(candidates))
 
@@ -251,8 +258,8 @@ def render(data: dict) -> str:
     if actions.get("recommend"):
         rows = "".join(render_action(
             a["name"], a["score"],
-            f"<div class='action-section'><strong>📋 候选人背景：</strong>{a.get('background', '')}</div>"
-            f"<div class='action-section'><strong>🎯 沟通方向：</strong>{a.get('action', '')}</div>"
+            f"<div class='action-section'><strong>📋 候选人背景：</strong>{text(a.get('background', ''))}</div>"
+            f"<div class='action-section'><strong>🎯 沟通方向：</strong>{text(a.get('action', ''))}</div>"
         ) for a in actions["recommend"])
         recommend_html = f'<section class="action-group"><h3>✅ 强烈推荐面试（≥70 分）</h3>{rows}</section>'
 
@@ -260,15 +267,15 @@ def render(data: dict) -> str:
     if actions.get("pending"):
         rows = "".join(render_action(
             a["name"], a["score"],
-            f"<div class='action-section'><strong>✅ 优势：</strong>{a.get('strengths', '')}</div>"
-            f"<div class='action-section'><strong>❓ 需确认问题：</strong>{a.get('action', '')}</div>"
+            f"<div class='action-section'><strong>✅ 优势：</strong>{text(a.get('strengths', ''))}</div>"
+            f"<div class='action-section'><strong>❓ 需确认问题：</strong>{text(a.get('action', ''))}</div>"
         ) for a in actions["pending"])
         pending_html = f'<section class="action-group"><h3>📌 待沟通确认（60-69 分）</h3>{rows}</section>'
 
     reject_html = ""
     if actions.get("reject"):
         items = "".join(
-            f"<div class='reject-item'><strong>{r['name']}</strong>（{r['score']:.1f} 分）— {r.get('concerns', '')}</div>"
+            f"<div class='reject-item'><strong>{text(r['name'])}</strong>（{r['score']:.1f} 分）— {text(r.get('concerns', ''))}</div>"
             for r in actions["reject"]
         )
         reject_html = f'<section class="action-group"><h3>❌ 不推荐</h3>{items}</section>'
@@ -276,7 +283,7 @@ def render(data: dict) -> str:
     job = meta.get("job", {})
     type_judge = meta.get("type_judgment", {})
     th_cells = "".join(
-        f'<th>{labels[i]} {w}%</th>'
+        f'<th>{text(labels[i])} {w}%</th>'
         for i, w in enumerate([25, 25, 25, 15, 10][:len(labels)])
     )
 
@@ -284,42 +291,42 @@ def render(data: dict) -> str:
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>{meta.get('title', '简历筛选报告')}</title>
+<title>{text(meta.get('title', '简历筛选报告'))}</title>
 <style>{CSS}</style>
 </head>
 <body>
 <div class="container">
 
 <header class="header">
-  <h1>📊 {meta.get('title', '简历筛选报告')}</h1>
-  <div class="subtitle">{meta.get('subtitle', '')}</div>
-  {f'<div class="run-badge">🆔 run_id: {data.get("run_id") or meta.get("run_id", "")}　|　🕐 生成时间: {data.get("generated_at") or meta.get("generated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>' if (data.get('run_id') or meta.get('run_id')) else ''}
+  <h1>📊 {text(meta.get('title', '简历筛选报告'))}</h1>
+  <div class="subtitle">{text(meta.get('subtitle', ''))}</div>
+  {f'<div class="run-badge">🆔 run_id: {text(data.get("run_id") or meta.get("run_id", ""))}　|　🕐 生成时间: {text(data.get("generated_at") or meta.get("generated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</div>' if (data.get('run_id') or meta.get('run_id')) else ''}
   <div class="meta-grid">
-    <div class="meta-item"><div class="label">岗位</div><div class="value">{job.get('name', '')}</div></div>
-    <div class="meta-item"><div class="label">公司</div><div class="value">{job.get('company', '')}</div></div>
-    <div class="meta-item"><div class="label">地点</div><div class="value">{job.get('location', '')}</div></div>
-    <div class="meta-item"><div class="label">薪资</div><div class="value">{job.get('salary', '')}</div></div>
-    <div class="meta-item"><div class="label">经验要求</div><div class="value">{job.get('experience_required', '')}</div></div>
-    <div class="meta-item"><div class="label">学历要求</div><div class="value">{job.get('degree_required', '')}</div></div>
+    <div class="meta-item"><div class="label">岗位</div><div class="value">{text(job.get('name', ''))}</div></div>
+    <div class="meta-item"><div class="label">公司</div><div class="value">{text(job.get('company', ''))}</div></div>
+    <div class="meta-item"><div class="label">地点</div><div class="value">{text(job.get('location', ''))}</div></div>
+    <div class="meta-item"><div class="label">薪资</div><div class="value">{text(job.get('salary', ''))}</div></div>
+    <div class="meta-item"><div class="label">经验要求</div><div class="value">{text(job.get('experience_required', ''))}</div></div>
+    <div class="meta-item"><div class="label">学历要求</div><div class="value">{text(job.get('degree_required', ''))}</div></div>
   </div>
 </header>
 
 <section class="section">
   <h2>🎯 岗位类型判定</h2>
-  <p><strong>{type_judge.get('type', '')}</strong> —— {type_judge.get('reason', '')}</p>
+  <p><strong>{text(type_judge.get('type', ''))}</strong> —— {text(type_judge.get('reason', ''))}</p>
   <div class="jd-summary">
     <h4>核心任职要求</h4>
-    <ul>{''.join(f'<li>{r}</li>' for r in meta.get('core_requirements', []))}</ul>
+    <ul>{''.join(f'<li>{text(r)}</li>' for r in meta.get('core_requirements', []))}</ul>
   </div>
 </section>
 
 <section class="section">
   <h2>📈 筛选总览</h2>
   <div class="overview">
-    <div class="stat-card green"><div class="num">{summary.get('recommend', 0)}</div><div class="label">✅ 推荐面试 (≥70)</div></div>
-    <div class="stat-card yellow"><div class="num">{summary.get('pending', 0)}</div><div class="label">📌 待沟通确认 (60-69)</div></div>
-    <div class="stat-card red"><div class="num">{summary.get('reject', 0)}</div><div class="label">❌ 不推荐 (&lt;60)</div></div>
-    <div class="stat-card blue"><div class="num">{summary.get('total', 0)}</div><div class="label">📊 总候选人</div></div>
+    <div class="stat-card green"><div class="num">{text(summary.get('recommend', 0))}</div><div class="label">✅ 推荐面试 (≥70)</div></div>
+    <div class="stat-card yellow"><div class="num">{text(summary.get('pending', 0))}</div><div class="label">📌 待沟通确认 (60-69)</div></div>
+    <div class="stat-card red"><div class="num">{text(summary.get('reject', 0))}</div><div class="label">❌ 不推荐 (&lt;60)</div></div>
+    <div class="stat-card blue"><div class="num">{text(summary.get('total', 0))}</div><div class="label">📊 总候选人</div></div>
   </div>
 </section>
 
@@ -349,7 +356,7 @@ def render(data: dict) -> str:
   {reject_html}
 </section>
 
-<div class="footer">{data.get('footer', f'生成时间：{datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}')}</div>
+<div class="footer">{text(data.get('footer', f'生成时间：{datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}'))}</div>
 </div>
 </body>
 </html>"""
