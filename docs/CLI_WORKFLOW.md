@@ -44,6 +44,8 @@ boss-hr report --job-name "<岗位名>" --encrypt-job-id "<岗位ID>" --run-id "
 boss-hr status --job-name "<岗位名>" --encrypt-job-id "<岗位ID>" --run-id "<run_id>"
 ```
 
+score 汇总会读取本 run 的 job_detail.json，补齐岗位信息与任职要求；评分中缺失的简历事实从本轮原始简历补回。summary 在正式报告中展示为综合评价，历史格式的维度理由同样保留。评语支持加粗和换行，外部HTML按文本转义。候选人详情保留每个人的沟通建议；没有填写的可选内容不绘制空栏目，行动区仍保留已有背景和评价，不以统一话术代替。完整报告内容由智能体按评分协议逐人填写。缺失学校时按任务日期选择最高已完成学历；无法唯一选校时展示教育经历、注明待复核并暂按60计。
+
 report 返回 data.report_file；报告就绪后交付用户。用户明确要求打招呼时才执行：
 
 ```powershell

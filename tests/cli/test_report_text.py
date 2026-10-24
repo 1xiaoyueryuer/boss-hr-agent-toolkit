@@ -18,6 +18,8 @@ def test_external_text_is_displayed_literally(workspace):
     meta["job"] = {k: literal for k in ("name", "company", "location", "salary", "experience_required", "degree_required")}
     meta["type_judgment"] = {"type": literal, "reason": literal}
     meta["core_requirements"] = [literal]
+    meta["job_description"] = literal
+    data["notices"] = [literal]
     data.update(footer=literal, generated_at=literal)
     data["dimension_labels"][0] = literal
     for c in data["candidates"]:
@@ -26,6 +28,7 @@ def test_external_text_is_displayed_literally(workspace):
         c["dimensions"][0]["reason"] = literal
         c["highlights"] = [literal]
         c["concerns"] = [literal]
+        c["summary"] = literal
     hard = copy.deepcopy(data["candidates"][0])
     hard.update(hard_pass=False, hard_reason=literal)
     data["candidates"].append(hard)
@@ -60,3 +63,28 @@ def test_external_text_is_displayed_literally(workspace):
     # 所有展示位置都应原样显示同一段文字；固定页面结构仍可正常渲染。
     assert html.count(escape(literal)) >= 30
     assert '<table>' in html and 'class="action-card"' in html
+
+
+def test_formal_report_formats_assessments_and_keeps_individual_advice(workspace):
+    root, eid, job, rid, _, _ = workspace
+    path = root / eid / "runs" / rid / "process" / "screening_results.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["notices"] = ["旧的修复说明不应展示在正式报告"]
+    for c, subject in zip(data["candidates"], ["制动系统设计", "前端项目"]):
+        c["summary"] = f"负责**{subject}**，使用 C++ 与 A&B。\n需核实**<script>无操作</script>**的描述。"
+        c["advice"] = f"请候选人介绍{subject}的个人职责。"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    proc = _run_cli("report", "--job-name", job, "--encrypt-job-id", eid, "--run-id", rid)
+    assert proc.returncode == 0, _decode(proc.stderr)
+    output = json.loads(_decode(proc.stdout))["data"]["report_file"]
+    html = Path(output).read_text(encoding="utf-8")
+    assert "<strong>制动系统设计</strong>" in html
+    assert "<strong>前端项目</strong>" in html
+    assert "<br>需核实" in html
+    assert "<strong>&lt;script&gt;无操作&lt;/script&gt;</strong>" in html
+    assert "<script>" not in html
+    assert "**" not in html
+    for c in data["candidates"]:
+        assert c["advice"] in html
+    assert "报告说明" not in html and data["notices"][0] not in html
+    assert "原始 LLM" not in html

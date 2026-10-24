@@ -87,6 +87,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from school_tier import lookup as school_lookup
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+from report_context import enrich_score, normalize_job_info
 
 # === 5 维度权重（2026-07-21 调整：工作经验 30%→25%，专业匹配 5%→10%）===
 WEIGHTS = {"edu": 0.25, "exp": 0.25, "skill": 0.25, "proj": 0.15, "major": 0.10}
@@ -159,7 +161,7 @@ def validate_score(score: dict) -> dict:
     输入：5 维度（edu 可被忽略）或 4 维度的 LLM 评分
     输出：5 维度评分 + tier（edu 来自 school_tier）
     """
-    school = _extract_school_name(score)
+    school = "" if score.get("school_selection_note") else _extract_school_name(score)
     if school:
         info = school_lookup(school)
         if info["score"] is not None:
@@ -170,7 +172,7 @@ def validate_score(score: dict) -> dict:
             score["dims_edu_reason"] = f"缺失（{school} 不在学校表，按60计）"
     else:
         score["dims"]["edu"] = 60
-        score["dims_edu_reason"] = "缺失（无学校名，按60计）"
+        score["dims_edu_reason"] = score.get("school_selection_note") or "缺失（无学校名，按60计）"
 
     score["weighted"] = calc_weighted(score["dims"])
     score["total"] = calc_total(score["weighted"])
@@ -195,7 +197,7 @@ def candidate_to_report(c: dict, rank: int) -> dict:
         "total": c["total"],
         "hard_pass": c.get("hard_pass", True),
         "hard_reason": c.get("hard_reason"),
-        "school": c.get("school", c.get("school_name", "")),
+        "school": c.get("school") or c.get("school_name", ""),
         "work_years": c.get("work_years", ""),
         "current_role": c.get("match_type", ""),
         "dimensions": [
@@ -210,6 +212,7 @@ def candidate_to_report(c: dict, rank: int) -> dict:
         "highlights": c.get("highlights", c.get("signals", [])),
         "concerns": c.get("concerns", c.get("gaps", [])),
         "advice": c.get("advice", ""),
+        "summary": c.get("summary", ""),
     }
 
 
@@ -220,26 +223,28 @@ def build_actions(candidates: list) -> dict:
         item = {"name": c["name"], "score": c["total"]}
         signals = c.get("highlights", c.get("signals", []))
         gaps = c.get("concerns", c.get("gaps", []))
+        background = " · ".join(str(c[k]) for k in ("school", "work_years", "current_role") if c.get(k))
+        item["background"] = background
+        item["strengths"] = "、".join(signals)
+        item["concerns"] = "、".join(gaps)
+        item["assessment"] = c.get("summary", "")
+        item["action"] = c.get("advice", "")
         if c["tier"] == "推荐":
-            item["background"] = "、".join(signals[:3]) if signals else "—"
-            item["action"] = c.get("advice", "")
             recommend.append(item)
         elif c["tier"] == "待定":
-            item["strengths"] = "、".join(signals[:3]) if signals else "—"
-            item["action"] = c.get("advice", "")
             pending.append(item)
         else:
-            item["concerns"] = "、".join(gaps[:2]) if gaps else "—"
+            item["concerns"] = item["concerns"] or c.get("summary", "")
             reject.append(item)
     return {"recommend": recommend, "pending": pending, "reject": reject}
 
 
 def build_meta(job_name: str, job_info: dict = None) -> dict:
-    """构造报告 meta（agent 可重写）"""
-    job = job_info or {}
+    """从本轮 JD 构造报告信息；不使用与岗位无关的固定判定文案。"""
+    job = normalize_job_info(job_info or {})
     return {
         "title": f"{job_name} · 简历筛选报告",
-        "subtitle": "LLM 主导评分 + school_tier 学历分档校准",
+        "subtitle": "岗位匹配分析 · 候选人评估与沟通建议",
         "job": {
             "name": job_name,
             "company": job.get("company", ""),
@@ -248,11 +253,9 @@ def build_meta(job_name: str, job_info: dict = None) -> dict:
             "experience_required": job.get("experience_required", ""),
             "degree_required": job.get("degree_required", ""),
         },
-        "type_judgment": job.get("type_judgment", {
-            "type": "技术岗",
-            "reason": "JD 明确要求结构设计 + 仿真 + 工艺核心技术能力"
-        }),
+        "type_judgment": job["type_judgment"],
         "core_requirements": job.get("core_requirements", []),
+        "job_description": job.get("description", ""),
     }
 
 
@@ -392,6 +395,7 @@ def main():
             return
 
     # 对每份评分收尾（强制用 school_tier 校准 edu + 重算 total + 判定 tier）
+    data = [enrich_score(c, resumes_by_gid[c["geek_id"]], run_id[:10]) for c in data]
     for c in data:
         validate_score(c)
 
@@ -410,8 +414,11 @@ def main():
     candidates = [candidate_to_report(c, i + 1) for i, c in enumerate(data)]
     actions = build_actions(candidates)
 
-    # 解析 job_info（可选）
-    job_info = json.loads(args.job_info) if args.job_info else {}
+    # 正常 CLI 也接入本轮 JD；显式传入的标准化信息只覆盖同名字段。
+    job_detail_path = out.get_process_path("job_detail.json")
+    job_info = json.load(open(job_detail_path, encoding="utf-8")) if os.path.isfile(job_detail_path) else {}
+    if args.job_info:
+        job_info.update(json.loads(args.job_info))
 
     # 组装 screening_results.json
     meta = build_meta(args.job_name, job_info)

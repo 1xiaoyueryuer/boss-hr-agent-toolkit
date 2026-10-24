@@ -5,7 +5,7 @@
   - 通用 schema：接受任意 score_resumes.py 输出的 screening_results.json
   - 视觉沿用原 generate_report.py 风格（黑蓝渐变 + 玻璃质感 + stat-card 配色）
   - 字段全部 .get() 处理，缺失自动跳过
-  - 外部字段按纯文本显示，HTML 结构只由模板生成
+  - 外部 HTML 转义；评语仅支持模板控制的加粗和换行
 
 输入：screening_results.json（score_resumes.py 输出）
   {
@@ -41,6 +41,7 @@ import sys
 import io
 import argparse
 import datetime
+import re
 from html import escape
 from pathlib import Path
 
@@ -108,14 +109,16 @@ tr:hover { background:#f9fafb; }
 .dim-score strong { color:#1a1a2e; }
 .bar { height:4px; background:#f3f4f6; border-radius:2px; overflow:hidden; margin-bottom:4px; }
 .bar-fill { height:100%; border-radius:2px; transition:width 0.3s; }
-.dim-reason { font-size:12px; color:#9ca3af; font-style:italic; }
+.dim-reason { font-size:13px; color:#4b5563; line-height:1.8; }
+.assessment { font-size:14px; line-height:1.8; background:#f0f5fc; border-left:3px solid #3b82f6; }
+.advice { font-size:14px; line-height:1.8; background:#f9fafb; border-left:3px solid #0f3460; }
 .custom-section { margin-top:12px; padding:10px 14px; border-radius:6px; }
 .custom-section.highlights { background:#ecfdf5; border-left:3px solid #059669; }
 .custom-section.concerns { background:#fef2f2; border-left:3px solid #dc2626; }
 .custom-label { font-size:13px; font-weight:600; margin-bottom:6px; }
 .custom-section.highlights .custom-label { color:#065f46; }
 .custom-section.concerns .custom-label { color:#991b1b; }
-.custom-section ul { margin-left:20px; font-size:13px; line-height:1.7; }
+.custom-section ul { margin-left:20px; font-size:14px; line-height:1.8; }
 .custom-section li { margin-bottom:3px; }
 .action-group { margin-bottom:24px; }
 .action-group h3 { font-size:16px; margin-bottom:12px; color:#1a1a2e; }
@@ -130,7 +133,16 @@ tr:hover { background:#f9fafb; }
 .jd-summary h4 { font-size:14px; color:#1a1a2e; margin-bottom:8px; }
 .jd-summary ul { margin-left:20px; font-size:13px; color:#4b5563; }
 .jd-summary li { margin-bottom:4px; }
+.job-description { margin-top:12px; font-size:14px; line-height:1.8; }
+.table-scroll { overflow-x:auto; }
 .footer { text-align:center; color:#9ca3af; font-size:12px; padding:20px; }
+@media (max-width:640px) {
+  body { padding:10px; }
+  .header, .section { padding:20px 16px; }
+  .header h1 { font-size:23px; }
+  .card { padding:16px; }
+  .card-title { flex-wrap:wrap; gap:8px; }
+}
 """
 
 
@@ -138,6 +150,14 @@ tr:hover { background:#f9fafb; }
 def text(value):
     """简历、JD 和模型输出均按文本插入；不接受外部 HTML。"""
     return escape(str(value)) if value is not None else ""
+
+
+def prose(value):
+    """评语先转义，再将成对 Markdown 加粗及换行转为模板标签。"""
+    escaped = text(value)
+    emphasized = re.sub(r"(?<![\\*])\*\*(?=\S)([^\n]+?)(?<=\S)\*\*(?!\*)",
+                        r"<strong>\1</strong>", escaped)
+    return emphasized.replace("\r\n", "\n").replace("\n", "<br>")
 
 
 def bar_color(pct):
@@ -185,24 +205,40 @@ def render_candidate(c, labels, rank):
             <span class="dim-score">{pct:g}% → <strong>{d.get('weighted', 0):.2f}</strong> 分</span>
           </div>
           <div class="bar"><div class="bar-fill" style="width:{pct:g}%;background:{color}"></div></div>
-          <div class="dim-reason">{text(d.get('reason', ''))}</div>
+          <div class="dim-reason">{prose(d.get('reason', ''))}</div>
         </div>"""
 
     custom_html = ""
+    if c.get("summary"):
+        custom_html += f"""
+        <div class="custom-section assessment">
+          <div class="custom-label">综合评价</div>
+          <div>{prose(c['summary'])}</div>
+        </div>"""
     if c.get("highlights"):
-        items = "".join(f"<li>{text(h)}</li>" for h in c["highlights"])
+        items = "".join(f"<li>{prose(h)}</li>" for h in c["highlights"])
         custom_html += f"""
         <div class="custom-section highlights">
           <div class="custom-label">✨ 亮点</div>
           <ul>{items}</ul>
         </div>"""
     if c.get("concerns"):
-        items = "".join(f"<li>{text(x)}</li>" for x in c["concerns"])
+        items = "".join(f"<li>{prose(x)}</li>" for x in c["concerns"])
         custom_html += f"""
         <div class="custom-section concerns">
           <div class="custom-label">⚠ 顾虑</div>
           <ul>{items}</ul>
         </div>"""
+
+    if c.get("advice"):
+        custom_html += f"""
+        <div class="custom-section advice">
+          <div class="custom-label">沟通建议</div>
+          <div>{prose(c['advice'])}</div>
+        </div>"""
+
+    profile = "".join(f"<span>{text(c[k])}</span>" for k in
+                      ("school", "work_years", "current_role") if c.get(k))
 
     return f"""
     <div class="card">
@@ -214,10 +250,7 @@ def render_candidate(c, labels, rank):
         </div>
         <div class="total-score">{c.get('total', 0):.2f}</div>
       </div>
-      <div class="meta">
-        <span>🎓 {text(c.get('school', ''))}</span>
-        <span>💼 {text(c.get('work_years', ''))} · {text(c.get('current_role', ''))}</span>
-      </div>
+      <div class="meta">{profile}</div>
       <div class="dims">{dims_html}</div>
       {custom_html}
     </div>"""
@@ -232,6 +265,14 @@ def render_action(name, score, body):
       </div>
       {body}
     </div>"""
+
+
+def action_body(action, advice_label):
+    fields = [("background", "候选人背景"), ("strengths", "优势"),
+              ("concerns", "需核实事项"), ("assessment", "综合评价"),
+              ("action", advice_label)]
+    return "".join(f'<div class="action-section"><strong>{label}：</strong>{prose(action[key])}</div>'
+                   for key, label in fields if action.get(key) and action[key] != "—")
 
 
 def render(data: dict) -> str:
@@ -258,30 +299,44 @@ def render(data: dict) -> str:
     if actions.get("recommend"):
         rows = "".join(render_action(
             a["name"], a["score"],
-            f"<div class='action-section'><strong>📋 候选人背景：</strong>{text(a.get('background', ''))}</div>"
-            f"<div class='action-section'><strong>🎯 沟通方向：</strong>{text(a.get('action', ''))}</div>"
+            action_body(a, "沟通方向")
         ) for a in actions["recommend"])
-        recommend_html = f'<section class="action-group"><h3>✅ 强烈推荐面试（≥70 分）</h3>{rows}</section>'
+        recommend_html = f'<section class="action-group"><h3>✅ 推荐面试（≥70 分）</h3>{rows}</section>'
 
     pending_html = ""
     if actions.get("pending"):
         rows = "".join(render_action(
             a["name"], a["score"],
-            f"<div class='action-section'><strong>✅ 优势：</strong>{text(a.get('strengths', ''))}</div>"
-            f"<div class='action-section'><strong>❓ 需确认问题：</strong>{text(a.get('action', ''))}</div>"
+            action_body(a, "需确认问题")
         ) for a in actions["pending"])
-        pending_html = f'<section class="action-group"><h3>📌 待沟通确认（60-69 分）</h3>{rows}</section>'
+        pending_html = f'<section class="action-group"><h3>📌 待沟通确认（60–&lt;70 分）</h3>{rows}</section>'
 
     reject_html = ""
     if actions.get("reject"):
         items = "".join(
-            f"<div class='reject-item'><strong>{text(r['name'])}</strong>（{r['score']:.1f} 分）— {text(r.get('concerns', ''))}</div>"
+            f"<div class='reject-item'><strong>{text(r['name'])}</strong>（{r['score']:.1f} 分）"
+            f"{('：' + prose(r['concerns'])) if r.get('concerns') and r['concerns'] != '—' else ''}</div>"
             for r in actions["reject"]
         )
         reject_html = f'<section class="action-group"><h3>❌ 不推荐</h3>{items}</section>'
 
     job = meta.get("job", {})
     type_judge = meta.get("type_judgment", {})
+    requirements = meta.get("core_requirements", [])
+    requirements_html = (f'<div class="jd-summary"><h4>核心任职要求</h4><ul>' +
+                         "".join(f'<li>{prose(r)}</li>' for r in requirements) + '</ul></div>'
+                         if requirements else "")
+    description = meta.get("job_description")
+    if description and requirements:
+        description_html = (f'<details class="jd-summary"><summary>完整岗位描述</summary>'
+                            f'<div class="job-description">{prose(description)}</div></details>')
+    elif description:
+        description_html = f'<div class="job-description">{prose(description)}</div>'
+    else:
+        description_html = ""
+    category_html = (f'<p><strong>{text(type_judge["type"])}</strong>' +
+                     (f' · {prose(type_judge["reason"])}' if type_judge.get("reason") else '') + '</p>'
+                     if type_judge.get("type") else "")
     th_cells = "".join(
         f'<th>{text(labels[i])} {w}%</th>'
         for i, w in enumerate([25, 25, 25, 15, 10][:len(labels)])
@@ -291,6 +346,7 @@ def render(data: dict) -> str:
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{text(meta.get('title', '简历筛选报告'))}</title>
 <style>{CSS}</style>
 </head>
@@ -300,7 +356,7 @@ def render(data: dict) -> str:
 <header class="header">
   <h1>📊 {text(meta.get('title', '简历筛选报告'))}</h1>
   <div class="subtitle">{text(meta.get('subtitle', ''))}</div>
-  {f'<div class="run-badge">🆔 run_id: {text(data.get("run_id") or meta.get("run_id", ""))}　|　🕐 生成时间: {text(data.get("generated_at") or meta.get("generated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</div>' if (data.get('run_id') or meta.get('run_id')) else ''}
+  {f'<div class="run-badge">任务编号：{text(data.get("run_id") or meta.get("run_id", ""))}　|　生成时间：{text(data.get("generated_at") or meta.get("generated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</div>' if (data.get('run_id') or meta.get('run_id')) else ''}
   <div class="meta-grid">
     <div class="meta-item"><div class="label">岗位</div><div class="value">{text(job.get('name', ''))}</div></div>
     <div class="meta-item"><div class="label">公司</div><div class="value">{text(job.get('company', ''))}</div></div>
@@ -312,19 +368,17 @@ def render(data: dict) -> str:
 </header>
 
 <section class="section">
-  <h2>🎯 岗位类型判定</h2>
-  <p><strong>{text(type_judge.get('type', ''))}</strong> —— {text(type_judge.get('reason', ''))}</p>
-  <div class="jd-summary">
-    <h4>核心任职要求</h4>
-    <ul>{''.join(f'<li>{text(r)}</li>' for r in meta.get('core_requirements', []))}</ul>
-  </div>
+  <h2>🎯 岗位信息与任职要求</h2>
+  {category_html}
+  {requirements_html}
+  {description_html}
 </section>
 
 <section class="section">
   <h2>📈 筛选总览</h2>
   <div class="overview">
     <div class="stat-card green"><div class="num">{text(summary.get('recommend', 0))}</div><div class="label">✅ 推荐面试 (≥70)</div></div>
-    <div class="stat-card yellow"><div class="num">{text(summary.get('pending', 0))}</div><div class="label">📌 待沟通确认 (60-69)</div></div>
+    <div class="stat-card yellow"><div class="num">{text(summary.get('pending', 0))}</div><div class="label">📌 待沟通确认 (60–&lt;70)</div></div>
     <div class="stat-card red"><div class="num">{text(summary.get('reject', 0))}</div><div class="label">❌ 不推荐 (&lt;60)</div></div>
     <div class="stat-card blue"><div class="num">{text(summary.get('total', 0))}</div><div class="label">📊 总候选人</div></div>
   </div>
@@ -332,6 +386,7 @@ def render(data: dict) -> str:
 
 <section class="section">
   <h2>🏆 候选人排名</h2>
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -342,6 +397,7 @@ def render(data: dict) -> str:
     </thead>
     <tbody>{rank_rows}</tbody>
   </table>
+  </div>
 </section>
 
 <section class="section">
